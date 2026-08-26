@@ -16,6 +16,17 @@ if (Get-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue) {
 }
 
 if (Test-Path -LiteralPath $installPath) {
+    $installDirectory = Get-Item -LiteralPath $installPath -Force
+    if (-not $installDirectory.PSIsContainer -or
+        ($installDirectory.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+        throw "Refusing to recursively remove an invalid or redirected install path: $installPath"
+    }
+    $nestedReparsePoint = Get-ChildItem -LiteralPath $installPath -Force -Recurse |
+        Where-Object { ($_.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0 } |
+        Select-Object -First 1
+    if ($null -ne $nestedReparsePoint) {
+        throw "Refusing to remove an install directory containing a reparse point: $($nestedReparsePoint.FullName)"
+    }
     Remove-Item -LiteralPath $installPath -Recurse -Force
 }
 

@@ -14,6 +14,10 @@ $enginePath = Join-Path $InstallPath 'Invoke-DriveMapper.ps1'
 if (-not (Test-Path -LiteralPath $enginePath -PathType Leaf)) {
     throw "Drive mapper engine not found: $enginePath"
 }
+$taskTestPath = Join-Path $PSScriptRoot 'Test-DriveMapperTask.ps1'
+if (-not (Test-Path -LiteralPath $taskTestPath -PathType Leaf)) {
+    throw "Scheduled task validation script not found: $taskTestPath"
+}
 
 $powerShellPath = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
 $arguments = '-NoLogo -NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File "{0}"' -f $enginePath
@@ -73,7 +77,7 @@ $taskXml = @"
     <Hidden>false</Hidden>
     <RunOnlyIfIdle>false</RunOnlyIfIdle>
     <WakeToRun>false</WakeToRun>
-    <ExecutionTimeLimit>PT2M</ExecutionTimeLimit>
+    <ExecutionTimeLimit>PT0S</ExecutionTimeLimit>
     <Priority>7</Priority>
   </Settings>
   <Actions Context="Author">
@@ -87,9 +91,11 @@ $taskXml = @"
 
 Register-ScheduledTask -TaskName $TaskName -Xml $taskXml -Force | Out-Null
 
-$task = Get-ScheduledTask -TaskName $TaskName -ErrorAction Stop
+$task = Get-ScheduledTask -TaskName $TaskName -TaskPath '\' -ErrorAction Stop
 if ($task.State -eq 'Disabled') {
     Enable-ScheduledTask -TaskName $TaskName | Out-Null
 }
+
+& $taskTestPath -InstallPath $InstallPath -TaskName $TaskName
 
 Write-Output "Registered scheduled task '$TaskName'."

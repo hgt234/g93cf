@@ -15,6 +15,7 @@ $requiredFiles = @(
     'Invoke-DriveMapper.ps1',
     'Mappings.json',
     'Register-DriveMapperTask.ps1',
+    'Test-DriveMapperTask.ps1',
     'Version.json'
 )
 
@@ -25,27 +26,62 @@ foreach ($file in $requiredFiles) {
     }
 }
 
+& (Join-Path $payloadPath 'Invoke-DriveMapper.ps1') `
+    -ConfigurationPath (Join-Path $payloadPath 'Mappings.json') -ValidateOnly | Out-Null
+
 $existingTask = Get-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue
 if ($null -ne $existingTask -and $existingTask.State -eq 'Running') {
     Stop-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue
 }
 
-if (-not (Test-Path -LiteralPath $installPath -PathType Container)) {
-    New-Item -Path $installPath -ItemType Directory -Force | Out-Null
+if (Test-Path -LiteralPath $installPath) {
+    $installDirectory = Get-Item -LiteralPath $installPath -Force
+    if (-not $installDirectory.PSIsContainer) {
+        throw "Install path exists but is not a directory: $installPath"
+    }
+    if (($installDirectory.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+        throw "Refusing to install through a reparse point: $installPath"
+    }
+    $nestedReparsePoint = Get-ChildItem -LiteralPath $installPath -Force -Recurse |
+        Where-Object { ($_.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0 } |
+        Select-Object -First 1
+    if ($null -ne $nestedReparsePoint) {
+        throw "Refusing to replace an install directory containing a reparse point: $($nestedReparsePoint.FullName)"
+    }
+    Remove-Item -LiteralPath $installPath -Recurse -Force
 }
+
+New-Item -Path $installPath -ItemType Directory | Out-Null
+
+$inheritanceFlags = [Security.AccessControl.InheritanceFlags]'ContainerInherit, ObjectInherit'
+$acl = New-Object Security.AccessControl.DirectorySecurity
+$acl.SetAccessRuleProtection($true, $false)
+$acl.SetOwner((New-Object Security.Principal.SecurityIdentifier('S-1-5-32-544')))
+foreach ($sid in @('S-1-5-18', 'S-1-5-32-544')) {
+    $rule = New-Object Security.AccessControl.FileSystemAccessRule(
+        (New-Object Security.Principal.SecurityIdentifier($sid)),
+        [Security.AccessControl.FileSystemRights]::FullControl,
+        $inheritanceFlags,
+        [Security.AccessControl.PropagationFlags]::None,
+        [Security.AccessControl.AccessControlType]::Allow
+    )
+    [void]$acl.AddAccessRule($rule)
+}
+$usersRule = New-Object Security.AccessControl.FileSystemAccessRule(
+    (New-Object Security.Principal.SecurityIdentifier('S-1-5-32-545')),
+    [Security.AccessControl.FileSystemRights]'ReadAndExecute, Synchronize',
+    $inheritanceFlags,
+    [Security.AccessControl.PropagationFlags]::None,
+    [Security.AccessControl.AccessControlType]::Allow
+)
+[void]$acl.AddAccessRule($usersRule)
+Set-Acl -LiteralPath $installPath -AclObject $acl
 
 foreach ($file in $requiredFiles) {
     Copy-Item -LiteralPath (Join-Path $payloadPath $file) -Destination (Join-Path $installPath $file) -Force
 }
 
-# Standard users require read/execute access but must not be able to alter the engine or
-# entitlement configuration. ProgramData normally inherits this ACL; make it explicit.
-& icacls.exe $installPath '/inheritance:e' '/grant:r' '*S-1-5-32-545:(OI)(CI)(RX)' '/T' '/C' | Out-Null
-if ($LASTEXITCODE -ne 0) {
-    throw "Failed to set read/execute permissions on $installPath."
-}
-
-& (Join-Path $installPath 'Register-DriveMapperTask.ps1') -InstallPath $installPath
+& (Join-Path $payloadPath 'Register-DriveMapperTask.ps1') -InstallPath $installPath
 
 $version = Get-Content -LiteralPath (Join-Path $installPath 'Version.json') -Raw | ConvertFrom-Json
 $registryPath = 'HKLM:\SOFTWARE\ManagedDriveMapper'

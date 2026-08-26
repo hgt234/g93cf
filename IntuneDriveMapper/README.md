@@ -10,6 +10,9 @@ Kerberos SSO and may not have VPN connectivity at sign-in.
   five minutes.
 - Runs unelevated as the interactive user; credentials are never requested, collected, or
   stored.
+- Changes mappings only for users whose UPN suffix is explicitly allowed in configuration.
+- Installs one device-wide task. Intune user assignment does not restrict that task to the
+  assigned user after installation.
 - Expands environment variables such as `%USERNAME%` in UNC paths.
 - Requires FQDN file-server names by default.
 - Resolves nested on-premises AD membership using the computed `tokenGroups` attribute.
@@ -26,11 +29,13 @@ Kerberos SSO and may not have VPN connectivity at sign-in.
 | `Payload/Mappings.json` | The only mapping and group-entitlement table |
 | `Payload/Invoke-DriveMapper.ps1` | User-context reconciliation engine |
 | `Payload/Register-DriveMapperTask.ps1` | Creates or repairs the scheduled task |
+| `Payload/Test-DriveMapperTask.ps1` | Verifies the task action, principal, triggers, and settings |
 | `Install-DriveMapper.ps1` | Intune Win32 system-context installer |
 | `Uninstall-DriveMapper.ps1` | Removes the application and task |
 | `Detect-DriveMapper.ps1` | Intune Win32 custom detection script |
 | `Remediation/*` | Optional scheduled-task health detection and repair |
 | `Build-IntuneWin.ps1` | Wrapper for Microsoft's IntuneWinAppUtil |
+| `Test-DriveMapperSolution.ps1` | Parser, JSON, configuration, and PSScriptAnalyzer checks |
 
 ## 1. Configure mappings
 
@@ -70,9 +75,13 @@ For a drive available to members of either group, including nested membership:
 
 Set these top-level values:
 
+- `AllowedUserUpnSuffixes`: required list of permitted user UPN suffixes. This prevents the
+  machine-wide task from changing mappings for unrelated local, guest, or cross-tenant users.
 - `AdDomainFqdn`: on-premises AD DNS name. Required only when any group rule exists.
-- `DirectoryServer`: normally blank. Set a GC/DC FQDN only during troubleshooting; leaving
-  it blank avoids tying clients to one domain controller.
+- `DirectoryServer`: normally blank in `Domain` mode. Set a DC FQDN to pin single-domain
+  lookup or an actual global catalog FQDN when using `GlobalCatalog` mode.
+- `DirectorySearchMode`: use `Domain` for `AdDomainFqdn` only. Use `GlobalCatalog` for a
+  forest-wide UPN search; this mode requires `DirectoryServer` to identify a ready GC.
 - `GroupCacheHours`: membership refresh interval; four hours is the recommended default.
 - `RequireFqdnForFileServers`: keep `true` when clients do not receive an AD DNS suffix.
 - `AdoptExistingMappings`: keep `false` unless the engine should assume ownership of an
@@ -94,12 +103,32 @@ Rules are evaluated as follows:
 An empty set of all three arrays makes a mapping available to every targeted user. SMB and
 NTFS permissions remain the final authorization boundary.
 
+The signed-in UPN must match the user's on-premises AD `userPrincipalName` for group lookup.
+If it does not, the mapper falls back to a unique `sAMAccountName` match within
+`AdDomainFqdn`; it never performs an ambiguous forest-wide SAM lookup.
+
 ## 2. Validate locally
 
-JSON and mapping rules can be validated without contacting AD or changing drives:
+Install PSScriptAnalyzer once for the current user. PowerShell 7.2.11 or later can run these
+cross-platform checks; run them in Windows PowerShell 5.1 as well before release because that
+is the deployment runtime.
 
 ```powershell
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\Payload\Invoke-DriveMapper.ps1 -ValidateOnly
+Install-PSResource -Name PSScriptAnalyzer -Scope CurrentUser
+# Windows PowerShell 5.1 with PowerShellGet 2.x can use:
+Install-Module -Name PSScriptAnalyzer -Scope CurrentUser -Force
+```
+
+Run parsing, PowerShell 5.1 compatibility analysis, JSON parsing, and mapping-rule validation:
+
+```powershell
+.\Test-DriveMapperSolution.ps1
+```
+
+Parser, JSON, and mapping checks can run without PSScriptAnalyzer when bootstrapping a host:
+
+```powershell
+.\Test-DriveMapperSolution.ps1 -SkipScriptAnalyzer
 ```
 
 On a pilot Entra-joined client, run the engine as the signed-in user while connected to VPN:
@@ -127,19 +156,23 @@ Create a Windows app (Win32) in Intune with these values:
 - Install command:
 
 ```text
-%SystemRoot%\SysNative\WindowsPowerShell\v1.0\powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File .\Install-DriveMapper.ps1
+cmd.exe /d /c Install-DriveMapper.cmd
 ```
 
 - Uninstall command:
 
 ```text
-%SystemRoot%\SysNative\WindowsPowerShell\v1.0\powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File .\Uninstall-DriveMapper.ps1
+cmd.exe /d /c Uninstall-DriveMapper.cmd
 ```
+
+The packaged wrappers expand `%SystemRoot%` internally and select 64-bit Windows PowerShell.
+This is required because Intune does not expand environment variables in the uninstall field.
 
 - Detection rule: **Use a custom detection script**, upload `Detect-DriveMapper.ps1`, run
   as 64-bit, and do not enforce signature checking unless the scripts are signed.
-- Assignment: required for the Entra-joined device or user population that may receive any
-  of the configured mappings. The JSON group rules decide individual drive eligibility.
+- Assignment: required device groups only. Every allowed-suffix user who signs into an
+  assigned device can run the task; JSON group rules decide individual drive eligibility.
+  Do not rely on an Intune user assignment to scope this machine-wide installation.
 
 When publishing an update, increment `Payload/Version.json` and `$expectedVersion` in
 `Detect-DriveMapper.ps1`, then replace/supersede the Win32 package. Mapping logic remains in
@@ -167,6 +200,7 @@ Per-user log and state are stored at:
 %LOCALAPPDATA%\ManagedDriveMapper\DriveMapper.log
 %LOCALAPPDATA%\ManagedDriveMapper\State.json
 %LOCALAPPDATA%\ManagedDriveMapper\GroupCache.json
+%LOCALAPPDATA%\ManagedDriveMapper\Health.json
 ```
 
 Force a fresh LDAP membership query:
@@ -186,6 +220,8 @@ klist
 
 Expected offline behavior is a warning that the LDAP server or file server is unavailable.
 Existing mappings are retained and the next network event or five-minute run retries.
+Non-transient mapping failures set the task result to failure and write `Health.json` with a
+`Degraded` status. Offline dependency failures write `TransientFailure` and remain retryable.
 
 If the user can reach TCP 445 but mapping reports access denied or credentials are requested,
 fix Kerberos/Cloud Trust, SPNs, share permissions, or DNS first. The mapper intentionally has

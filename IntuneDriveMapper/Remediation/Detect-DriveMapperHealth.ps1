@@ -4,19 +4,25 @@
 param()
 
 $installPath = Join-Path $env:ProgramData 'ManagedDriveMapper'
-$enginePath = Join-Path $installPath 'Invoke-DriveMapper.ps1'
-$registerPath = Join-Path $installPath 'Register-DriveMapperTask.ps1'
+$requiredFiles = @(
+    'Invoke-DriveMapper.ps1',
+    'Mappings.json',
+    'Register-DriveMapperTask.ps1',
+    'Test-DriveMapperTask.ps1',
+    'Version.json'
+)
 
 try {
-    if (-not (Test-Path -LiteralPath $enginePath -PathType Leaf) -or
-        -not (Test-Path -LiteralPath $registerPath -PathType Leaf)) {
-        Write-Output 'Drive mapper installation is incomplete; Win32 app repair is required.'
-        exit 1
+    foreach ($file in $requiredFiles) {
+        if (-not (Test-Path -LiteralPath (Join-Path $installPath $file) -PathType Leaf)) {
+            Write-Output 'Drive mapper installation is incomplete; Win32 app repair is required.'
+            exit 1
+        }
     }
 
-    $task = Get-ScheduledTask -TaskName 'Managed Drive Mapper' -ErrorAction Stop
-    if ($task.State -eq 'Disabled') { throw 'Scheduled task is disabled.' }
-    if ([string](@($task.Actions)[0].Arguments) -notlike "*$enginePath*") { throw 'Scheduled task action is incorrect.' }
+    & (Join-Path $installPath 'Invoke-DriveMapper.ps1') `
+        -ConfigurationPath (Join-Path $installPath 'Mappings.json') -ValidateOnly | Out-Null
+    & (Join-Path $installPath 'Test-DriveMapperTask.ps1') -InstallPath $installPath
 
     Write-Output 'Drive mapper scheduled task is healthy.'
     exit 0

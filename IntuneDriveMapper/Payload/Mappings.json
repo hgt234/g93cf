@@ -1,8 +1,12 @@
 {
   "SchemaVersion": 1,
   "ConfigurationVersion": "1.0.0",
+  "AllowedUserUpnSuffixes": [
+    "contoso.com"
+  ],
   "AdDomainFqdn": "corp.contoso.com",
   "DirectoryServer": "",
+  "DirectorySearchMode": "Domain",
   "GroupCacheHours": 4,
   "TcpConnectTimeoutMilliseconds": 3000,
   "RequireFqdnForFileServers": true,
