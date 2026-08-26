@@ -1,0 +1,32 @@
+{
+  "SchemaVersion": 1,
+  "ConfigurationVersion": "1.0.0",
+  "AdDomainFqdn": "corp.contoso.com",
+  "DirectoryServer": "",
+  "GroupCacheHours": 4,
+  "TcpConnectTimeoutMilliseconds": 3000,
+  "RequireFqdnForFileServers": true,
+  "AdoptExistingMappings": false,
+  "Mappings": [
+    {
+      "Enabled": false,
+      "DriveLetter": "H",
+      "Path": "\\\\files.corp.contoso.com\\home\\%USERNAME%",
+      "Label": "Home",
+      "RequiredGroupSidsAny": [],
+      "RequiredGroupSidsAll": [],
+      "ExcludedGroupSids": []
+    },
+    {
+      "Enabled": false,
+      "DriveLetter": "S",
+      "Path": "\\\\files.corp.contoso.com\\shared",
+      "Label": "Shared",
+      "RequiredGroupSidsAny": [
+        "S-1-5-21-111111111-222222222-333333333-1001"
+      ],
+      "RequiredGroupSidsAll": [],
+      "ExcludedGroupSids": []
+    }
+  ]
+}
