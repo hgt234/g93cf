@@ -95,3 +95,35 @@ $LASTEXITCODE
 
 Review `%ProgramData%\Microsoft\IntuneManagementExtension\Logs\MicrosoftEdgeRepair.log` for the
 download source, setup exit code, post-install validation result, and any failure detail.
+
+## URL Association Diagnostics
+
+The original detection validates Edge's installation but does not currently validate Windows URL
+protocol registration. If **Run > `https://example.com`** reports that no app is available, run
+`Get-EdgeUrlAssociationDiagnostics.ps1` while signed in as the affected user:
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass `
+    -File .\Get-EdgeUrlAssociationDiagnostics.ps1 `
+    -OutputPath "$env:USERPROFILE\Desktop\EdgeUrlAssociations.json"
+```
+
+Do not run the first capture as `SYSTEM` or another administrator. The effective `http` and
+`https` selections are stored in the affected user's registry hive. If possible, collect a second
+report from a working device for comparison. Use `-IncludeOtherUsers` only when an elevated or
+`SYSTEM` capture needs loaded-user association data; it adds user SIDs and profile paths.
+
+The script does not modify registry or association state and does not attempt to open a URL. It
+only creates the requested JSON report. The report includes the computer name, current user name
+and SID, and active user name. It records:
+
+- the Windows association API result for `http` and `https`;
+- current-user `UserChoice` ProgIDs and hashes, plus loaded users when explicitly requested;
+- current-user, merged, and machine protocol classes and their open commands;
+- `MSEdgeHTM` and any selected ProgID commands, including whether their executables exist;
+- Edge registered-application capabilities, App Paths, updater registration, and policies;
+- available Edge executable paths, versions, and signature status.
+
+Provide the resulting `EdgeUrlAssociations.json` from both the broken and working device before
+changing detection or attempting to write `UserChoice`. Windows protects `UserChoice` with a hash;
+directly setting its `ProgId` without a valid hash can make the association state worse.
