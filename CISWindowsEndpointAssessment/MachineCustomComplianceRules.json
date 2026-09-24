@@ -1,0 +1,256 @@
+{
+    "Rules":  [
+                  {
+                      "SettingName":  "OverallCompliant",
+                      "Operator":  "IsEquals",
+                      "DataType":  "Boolean",
+                      "Operand":  true,
+                      "MoreInfoUrl":  "https://www.cisecurity.org/benchmark/microsoft_windows_desktop",
+                      "RemediationStrings":  [
+                                                 {
+                                                     "Language":  "en_US",
+                                                     "Title":  "The CIS Windows 11 24H2 Machine assessment found noncompliant settings. Actual value: {ActualValue}.",
+                                                     "Description":  "Contact IT. The detailed HardeningKitty results are stored locally on the endpoint."
+                                                 }
+                                             ]
+                  },
+                  {
+                      "SettingName":  "AssessmentHealthy",
+                      "Operator":  "IsEquals",
+                      "DataType":  "Boolean",
+                      "Operand":  true,
+                      "MoreInfoUrl":  "https://www.cisecurity.org/benchmark/microsoft_windows_desktop",
+                      "RemediationStrings":  [
+                                                 {
+                                                     "Language":  "en_US",
+                                                     "Title":  "The CIS Windows 11 24H2 Machine assessment did not complete every expected check. Actual value: {ActualValue}.",
+                                                     "Description":  "Contact IT to review execution context, endpoint language, engine installation, and the local assessment report."
+                                                 }
+                                             ]
+                  },
+                  {
+                      "SettingName":  "EngineIntegrity",
+                      "Operator":  "IsEquals",
+                      "DataType":  "Boolean",
+                      "Operand":  true,
+                      "MoreInfoUrl":  "https://www.cisecurity.org/benchmark/microsoft_windows_desktop",
+                      "RemediationStrings":  [
+                                                 {
+                                                     "Language":  "en_US",
+                                                     "Title":  "The pinned HardeningKitty engine failed integrity validation. Actual value: {ActualValue}.",
+                                                     "Description":  "Contact IT to reinstall the approved assessment engine package."
+                                                 }
+                                             ]
+                  },
+                  {
+                      "SettingName":  "AccountPoliciesCompliant",
+                      "Operator":  "IsEquals",
+                      "DataType":  "Boolean",
+                      "Operand":  true,
+                      "MoreInfoUrl":  "https://www.cisecurity.org/benchmark/microsoft_windows_desktop",
+                      "RemediationStrings":  [
+                                                 {
+                                                     "Language":  "en_US",
+                                                     "Title":  "Account Policies controls require attention. Actual value: {ActualValue}.",
+                                                     "Description":  "Contact IT; security settings are managed centrally."
+                                                 }
+                                             ]
+                  },
+                  {
+                      "SettingName":  "AdminTemplatesControlPanelCompliant",
+                      "Operator":  "IsEquals",
+                      "DataType":  "Boolean",
+                      "Operand":  true,
+                      "MoreInfoUrl":  "https://www.cisecurity.org/benchmark/microsoft_windows_desktop",
+                      "RemediationStrings":  [
+                                                 {
+                                                     "Language":  "en_US",
+                                                     "Title":  "Administrative Templates: Control Panel controls require attention. Actual value: {ActualValue}.",
+                                                     "Description":  "Contact IT; security settings are managed centrally."
+                                                 }
+                                             ]
+                  },
+                  {
+                      "SettingName":  "AdminTemplatesNetworkCompliant",
+                      "Operator":  "IsEquals",
+                      "DataType":  "Boolean",
+                      "Operand":  true,
+                      "MoreInfoUrl":  "https://www.cisecurity.org/benchmark/microsoft_windows_desktop",
+                      "RemediationStrings":  [
+                                                 {
+                                                     "Language":  "en_US",
+                                                     "Title":  "Administrative Templates: Network controls require attention. Actual value: {ActualValue}.",
+                                                     "Description":  "Contact IT; security settings are managed centrally."
+                                                 }
+                                             ]
+                  },
+                  {
+                      "SettingName":  "AdminTemplatesPrintersCompliant",
+                      "Operator":  "IsEquals",
+                      "DataType":  "Boolean",
+                      "Operand":  true,
+                      "MoreInfoUrl":  "https://www.cisecurity.org/benchmark/microsoft_windows_desktop",
+                      "RemediationStrings":  [
+                                                 {
+                                                     "Language":  "en_US",
+                                                     "Title":  "Administrative Templates: Printers controls require attention. Actual value: {ActualValue}.",
+                                                     "Description":  "Contact IT; security settings are managed centrally."
+                                                 }
+                                             ]
+                  },
+                  {
+                      "SettingName":  "AdminTemplatesStartMenuAndTaskbarCompliant",
+                      "Operator":  "IsEquals",
+                      "DataType":  "Boolean",
+                      "Operand":  true,
+                      "MoreInfoUrl":  "https://www.cisecurity.org/benchmark/microsoft_windows_desktop",
+                      "RemediationStrings":  [
+                                                 {
+                                                     "Language":  "en_US",
+                                                     "Title":  "Administrative Templates: Start Menu and Taskbar controls require attention. Actual value: {ActualValue}.",
+                                                     "Description":  "Contact IT; security settings are managed centrally."
+                                                 }
+                                             ]
+                  },
+                  {
+                      "SettingName":  "AdminTemplatesSystemCompliant",
+                      "Operator":  "IsEquals",
+                      "DataType":  "Boolean",
+                      "Operand":  true,
+                      "MoreInfoUrl":  "https://www.cisecurity.org/benchmark/microsoft_windows_desktop",
+                      "RemediationStrings":  [
+                                                 {
+                                                     "Language":  "en_US",
+                                                     "Title":  "Administrative Templates: System controls require attention. Actual value: {ActualValue}.",
+                                                     "Description":  "Contact IT; security settings are managed centrally."
+                                                 }
+                                             ]
+                  },
+                  {
+                      "SettingName":  "AdminTemplatesWindowsComponentsCompliant",
+                      "Operator":  "IsEquals",
+                      "DataType":  "Boolean",
+                      "Operand":  true,
+                      "MoreInfoUrl":  "https://www.cisecurity.org/benchmark/microsoft_windows_desktop",
+                      "RemediationStrings":  [
+                                                 {
+                                                     "Language":  "en_US",
+                                                     "Title":  "Administrative Templates: Windows Components controls require attention. Actual value: {ActualValue}.",
+                                                     "Description":  "Contact IT; security settings are managed centrally."
+                                                 }
+                                             ]
+                  },
+                  {
+                      "SettingName":  "AdvancedAuditPolicyCompliant",
+                      "Operator":  "IsEquals",
+                      "DataType":  "Boolean",
+                      "Operand":  true,
+                      "MoreInfoUrl":  "https://www.cisecurity.org/benchmark/microsoft_windows_desktop",
+                      "RemediationStrings":  [
+                                                 {
+                                                     "Language":  "en_US",
+                                                     "Title":  "Advanced Audit Policy Configuration controls require attention. Actual value: {ActualValue}.",
+                                                     "Description":  "Contact IT; security settings are managed centrally."
+                                                 }
+                                             ]
+                  },
+                  {
+                      "SettingName":  "DefenderApplicationGuardCompliant",
+                      "Operator":  "IsEquals",
+                      "DataType":  "Boolean",
+                      "Operand":  true,
+                      "MoreInfoUrl":  "https://www.cisecurity.org/benchmark/microsoft_windows_desktop",
+                      "RemediationStrings":  [
+                                                 {
+                                                     "Language":  "en_US",
+                                                     "Title":  "Microsoft Defender Application Guard controls require attention. Actual value: {ActualValue}.",
+                                                     "Description":  "Contact IT; security settings are managed centrally."
+                                                 }
+                                             ]
+                  },
+                  {
+                      "SettingName":  "MSSLegacyCompliant",
+                      "Operator":  "IsEquals",
+                      "DataType":  "Boolean",
+                      "Operand":  true,
+                      "MoreInfoUrl":  "https://www.cisecurity.org/benchmark/microsoft_windows_desktop",
+                      "RemediationStrings":  [
+                                                 {
+                                                     "Language":  "en_US",
+                                                     "Title":  "MSS (Legacy) controls require attention. Actual value: {ActualValue}.",
+                                                     "Description":  "Contact IT; security settings are managed centrally."
+                                                 }
+                                             ]
+                  },
+                  {
+                      "SettingName":  "MSSecurityGuideCompliant",
+                      "Operator":  "IsEquals",
+                      "DataType":  "Boolean",
+                      "Operand":  true,
+                      "MoreInfoUrl":  "https://www.cisecurity.org/benchmark/microsoft_windows_desktop",
+                      "RemediationStrings":  [
+                                                 {
+                                                     "Language":  "en_US",
+                                                     "Title":  "MS Security Guide controls require attention. Actual value: {ActualValue}.",
+                                                     "Description":  "Contact IT; security settings are managed centrally."
+                                                 }
+                                             ]
+                  },
+                  {
+                      "SettingName":  "SecurityOptionsCompliant",
+                      "Operator":  "IsEquals",
+                      "DataType":  "Boolean",
+                      "Operand":  true,
+                      "MoreInfoUrl":  "https://www.cisecurity.org/benchmark/microsoft_windows_desktop",
+                      "RemediationStrings":  [
+                                                 {
+                                                     "Language":  "en_US",
+                                                     "Title":  "Security Options controls require attention. Actual value: {ActualValue}.",
+                                                     "Description":  "Contact IT; security settings are managed centrally."
+                                                 }
+                                             ]
+                  },
+                  {
+                      "SettingName":  "SystemServicesCompliant",
+                      "Operator":  "IsEquals",
+                      "DataType":  "Boolean",
+                      "Operand":  true,
+                      "MoreInfoUrl":  "https://www.cisecurity.org/benchmark/microsoft_windows_desktop",
+                      "RemediationStrings":  [
+                                                 {
+                                                     "Language":  "en_US",
+                                                     "Title":  "System Services controls require attention. Actual value: {ActualValue}.",
+                                                     "Description":  "Contact IT; security settings are managed centrally."
+                                                 }
+                                             ]
+                  },
+                  {
+                      "SettingName":  "UserRightsAssignmentCompliant",
+                      "Operator":  "IsEquals",
+                      "DataType":  "Boolean",
+                      "Operand":  true,
+                      "MoreInfoUrl":  "https://www.cisecurity.org/benchmark/microsoft_windows_desktop",
+                      "RemediationStrings":  [
+                                                 {
+                                                     "Language":  "en_US",
+                                                     "Title":  "User Rights Assignment controls require attention. Actual value: {ActualValue}.",
+                                                     "Description":  "Contact IT; security settings are managed centrally."
+                                                 }
+                                             ]
+                  },
+                  {
+                      "SettingName":  "WindowsFirewallCompliant",
+                      "Operator":  "IsEquals",
+                      "DataType":  "Boolean",
+                      "Operand":  true,
+                      "MoreInfoUrl":  "https://www.cisecurity.org/benchmark/microsoft_windows_desktop",
+                      "RemediationStrings":  [
+                                                 {
+                                                     "Language":  "en_US",
+                                                     "Title":  "Windows Firewall controls require attention. Actual value: {ActualValue}.",
+                                                     "Description":  "Contact IT; security settings are managed centrally."
+                                                 }
+                                             ]
+                  }
+              ]
+}

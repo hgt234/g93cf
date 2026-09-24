@@ -1,0 +1,35 @@
+{
+  "checkedUtc": "2026-09-17T18:49:00.6062119Z",
+  "subscriptionId": "57383abf-70be-4ada-aad8-c939d04bd112",
+  "tenantId": "ce5eca28-c365-424f-b2cf-9e5633886631",
+  "location": "centralus",
+  "vmSize": "Standard_E4bs_v5",
+  "passed": true,
+  "checks": {
+    "azureCliAuthenticated": true,
+    "subscriptionMatches": true,
+    "tenantMatches": true,
+    "providers": {
+      "Microsoft.Compute": "Registered",
+      "Microsoft.ContainerInstance": "Registered",
+      "Microsoft.DesktopVirtualization": "Registered",
+      "Microsoft.HybridCompute": "Registered",
+      "Microsoft.KeyVault": "Registered",
+      "Microsoft.ManagedIdentity": "Registered",
+      "Microsoft.Network": "Registered",
+      "Microsoft.Storage": "Registered",
+      "Microsoft.VirtualMachineImages": "Registered"
+    },
+    "vmSizeAvailable": true,
+    "windows11ImageAvailable": true,
+    "bicep": {
+      "infra/main.bicep": "Compiled",
+      "infra/access.bicep": "Compiled",
+      "infra/hybrid-main.bicep": "Compiled",
+      "infra/hybrid-access.bicep": "Compiled",
+      "infra/image-main.bicep": "Compiled",
+      "infra/session-host.bicep": "Compiled"
+    }
+  },
+  "failures": []
+}

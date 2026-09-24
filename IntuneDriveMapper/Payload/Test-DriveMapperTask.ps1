@@ -26,6 +26,7 @@ function Get-TaskXmlText {
 
     $node = $XmlDocument.SelectSingleNode($XPath, $NamespaceManager)
     if ($null -eq $node) { throw "Scheduled task XML is missing required node '$XPath'." }
+    if ($node -is [Xml.XmlAttribute]) { return $node.Value }
     return $node.InnerText
 }
 

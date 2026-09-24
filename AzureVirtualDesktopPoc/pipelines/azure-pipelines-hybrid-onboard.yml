@@ -1,0 +1,339 @@
+trigger: none
+pr: none
+
+parameters:
+  - name: ritmNumber
+    type: string
+  - name: ritmSysId
+    type: string
+  - name: requestedHostName
+    type: string
+  - name: requestedForUpn
+    type: string
+
+variables:
+  - group: avd-poc-hybrid
+  - group: avd-poc-servicenow
+  - name: artifactDirectory
+    value: $(Build.ArtifactStagingDirectory)/avd-hybrid
+
+stages:
+  - stage: ValidateRequest
+    displayName: Validate hybrid GPU request
+    jobs:
+      - job: Validate
+        pool:
+          vmImage: windows-latest
+        steps:
+          - task: PowerShell@2
+            displayName: Validate immutable request contract
+            env:
+              RITM_NUMBER: ${{ parameters.ritmNumber }}
+              RITM_SYS_ID: ${{ parameters.ritmSysId }}
+              REQUESTED_HOST_NAME: ${{ parameters.requestedHostName }}
+              REQUESTED_FOR_UPN: ${{ parameters.requestedForUpn }}
+            inputs:
+              pwsh: true
+              targetType: inline
+              script: |
+                & 'AzureVirtualDesktopPoc/scripts/Test-AvdRequest.ps1' `
+                  -RitmNumber $env:RITM_NUMBER -RitmSysId $env:RITM_SYS_ID `
+                  -RequestedHostName $env:REQUESTED_HOST_NAME -RequestedForUpn $env:REQUESTED_FOR_UPN
+          - task: PowerShell@2
+            displayName: Mark ServiceNow request in progress
+            env:
+              SN_INSTANCE_URL: $(SN_INSTANCE_URL)
+              SN_CLIENT_ID: $(SN_CLIENT_ID)
+              SN_CLIENT_SECRET: $(SN_CLIENT_SECRET)
+              SN_USERNAME: $(SN_USERNAME)
+              SN_PASSWORD: $(SN_PASSWORD)
+              RITM_SYS_ID: ${{ parameters.ritmSysId }}
+              HOST_NAME: ${{ parameters.requestedHostName }}
+              STATUS_FIELD: $(SN_STATUS_FIELD)
+              HOST_NAME_FIELD: $(SN_HOSTNAME_FIELD)
+              PLATFORM_FIELD: $(SN_PLATFORM_FIELD)
+            inputs:
+              pwsh: true
+              targetType: inline
+              script: |
+                & 'AzureVirtualDesktopPoc/scripts/Update-ServiceNowRitm.ps1' `
+                  -InstanceUrl $env:SN_INSTANCE_URL -ClientId $env:SN_CLIENT_ID -ClientSecret $env:SN_CLIENT_SECRET `
+                  -UserName $env:SN_USERNAME -Password $env:SN_PASSWORD -RitmSysId $env:RITM_SYS_ID `
+                  -Status 'In Progress' -HostName $env:HOST_NAME -Platform 'Hybrid GPU' `
+                  -StatusField $env:STATUS_FIELD -HostNameField $env:HOST_NAME_FIELD -PlatformField $env:PLATFORM_FIELD `
+                  -Message "Azure DevOps build $(Build.BuildId) accepted the Hybrid GPU request. The Proxmox VM will be preserved on failure."
+
+  - stage: ValidateArc
+    displayName: Validate manually built Arc VM
+    dependsOn: ValidateRequest
+    condition: succeeded()
+    jobs:
+      - job: ArcPreflight
+        pool:
+          vmImage: windows-latest
+        steps:
+          - task: AzureCLI@2
+            displayName: Validate Arc, hostname, user, OS, and PPKG lifetime
+            env:
+              SUBSCRIPTION_ID: $(AVD_HYBRID_SUBSCRIPTION_ID)
+              TENANT_ID: $(AVD_HYBRID_TENANT_ID)
+              ARC_RESOURCE_GROUP: $(AVD_HYBRID_RESOURCE_GROUP)
+              RITM_NUMBER: ${{ parameters.ritmNumber }}
+              VM_NAME: ${{ parameters.requestedHostName }}
+              REQUESTED_FOR_UPN: ${{ parameters.requestedForUpn }}
+              PPKG_CREATED_UTC: $(AVD_HYBRID_PPKG_CREATED_UTC)
+              PPKG_EXPIRES_UTC: $(AVD_HYBRID_PPKG_EXPIRES_UTC)
+              PPKG_MINIMUM_DAYS: $(AVD_HYBRID_PPKG_MINIMUM_VALIDITY_DAYS)
+            inputs:
+              azureSubscription: $(AVD_HYBRID_READINESS_SERVICE_CONNECTION)
+              scriptType: pscore
+              scriptLocation: inlineScript
+              inlineScript: |
+                New-Item -ItemType Directory -Path '$(artifactDirectory)' -Force | Out-Null
+                & 'AzureVirtualDesktopPoc/scripts/Test-AvdHybridArcMachine.ps1' `
+                  -SubscriptionId $env:SUBSCRIPTION_ID -TenantId $env:TENANT_ID `
+                  -ArcResourceGroupName $env:ARC_RESOURCE_GROUP -RitmNumber $env:RITM_NUMBER `
+                  -VmName $env:VM_NAME -RequestedForUpn $env:REQUESTED_FOR_UPN `
+                  -ProvisioningPackageCreatedUtc $env:PPKG_CREATED_UTC -ProvisioningPackageExpiresUtc $env:PPKG_EXPIRES_UTC `
+                  -MinimumPackageValidityDays ([int]$env:PPKG_MINIMUM_DAYS) `
+                  -ReportPath '$(artifactDirectory)/preflight.json'
+          - task: PublishPipelineArtifact@1
+            condition: always()
+            inputs:
+              targetPath: $(artifactDirectory)
+              artifact: avd-hybrid-preflight-${{ parameters.requestedHostName }}
+
+  - stage: EnrollAndRegister
+    displayName: Entra, Intune, Arc identity, and AVD registration
+    dependsOn: ValidateArc
+    condition: succeeded()
+    jobs:
+      - job: ConfigureGuest
+        timeoutInMinutes: 50
+        pool:
+          vmImage: windows-latest
+        steps:
+          - task: AzureCLI@2
+            displayName: Apply protected Entra and Intune provisioning package
+            env:
+              SUBSCRIPTION_ID: $(AVD_HYBRID_SUBSCRIPTION_ID)
+              ARC_RESOURCE_GROUP: $(AVD_HYBRID_RESOURCE_GROUP)
+              LOCATION: $(AVD_HYBRID_LOCATION)
+              VM_NAME: ${{ parameters.requestedHostName }}
+              PPKG_URI: $(AVD_HYBRID_PPKG_SAS_URI)
+              PPKG_SHA256: $(AVD_HYBRID_PPKG_SHA256)
+              PPKG_CREATED_UTC: $(AVD_HYBRID_PPKG_CREATED_UTC)
+              PPKG_EXPIRES_UTC: $(AVD_HYBRID_PPKG_EXPIRES_UTC)
+              PPKG_MINIMUM_DAYS: $(AVD_HYBRID_PPKG_MINIMUM_VALIDITY_DAYS)
+            inputs:
+              azureSubscription: $(AVD_HYBRID_READINESS_SERVICE_CONNECTION)
+              scriptType: pscore
+              scriptLocation: inlineScript
+              inlineScript: |
+                & 'AzureVirtualDesktopPoc/scripts/Invoke-AvdHybridEnrollment.ps1' `
+                  -SubscriptionId $env:SUBSCRIPTION_ID -TenantId $(AVD_HYBRID_TENANT_ID) -ArcResourceGroupName $env:ARC_RESOURCE_GROUP `
+                  -Location $env:LOCATION -VmName $env:VM_NAME `
+                  -ProvisioningPackageUri $env:PPKG_URI -ProvisioningPackageSha256 $env:PPKG_SHA256 `
+                  -ProvisioningPackageExpiresUtc $env:PPKG_EXPIRES_UTC `
+                  -MinimumPackageValidityDays ([int]$env:PPKG_MINIMUM_DAYS)
+          - task: AzureCLI@2
+            displayName: Install Entra login and AVD Hybrid extensions
+            env:
+              SUBSCRIPTION_ID: $(AVD_HYBRID_SUBSCRIPTION_ID)
+              ARC_RESOURCE_GROUP: $(AVD_HYBRID_RESOURCE_GROUP)
+              PLATFORM_RESOURCE_GROUP: $(AVD_HYBRID_RESOURCE_GROUP)
+              HOST_POOL_NAME: $(AVD_HYBRID_HOST_POOL_NAME)
+              LOCATION: $(AVD_HYBRID_LOCATION)
+              VM_NAME: ${{ parameters.requestedHostName }}
+            inputs:
+              azureSubscription: $(AVD_HYBRID_DEPLOYMENT_SERVICE_CONNECTION)
+              scriptType: pscore
+              scriptLocation: inlineScript
+              inlineScript: |
+                & 'AzureVirtualDesktopPoc/scripts/Install-AvdHybridExtensions.ps1' `
+                  -SubscriptionId $env:SUBSCRIPTION_ID -ArcResourceGroupName $env:ARC_RESOURCE_GROUP `
+                  -PlatformResourceGroupName $env:PLATFORM_RESOURCE_GROUP -HostPoolName $env:HOST_POOL_NAME `
+                  -Location $env:LOCATION -VmName $env:VM_NAME
+
+  - stage: Readiness
+    displayName: Validate management, security, GPU, and AVD readiness
+    dependsOn: EnrollAndRegister
+    condition: succeeded()
+    jobs:
+      - job: ReadinessChecks
+        timeoutInMinutes: 110
+        pool:
+          vmImage: windows-latest
+        steps:
+          - task: AzureCLI@2
+            displayName: Run hybrid readiness gates through Azure Arc
+            env:
+              SUBSCRIPTION_ID: $(AVD_HYBRID_SUBSCRIPTION_ID)
+              TENANT_ID: $(AVD_HYBRID_TENANT_ID)
+              ARC_RESOURCE_GROUP: $(AVD_HYBRID_RESOURCE_GROUP)
+              HOST_POOL_NAME: $(AVD_HYBRID_HOST_POOL_NAME)
+              VM_NAME: ${{ parameters.requestedHostName }}
+              EXPECTED_GPU_VENDOR: $(AVD_HYBRID_EXPECTED_GPU_VENDOR)
+              REQUIRED_APPS: $(AVD_HYBRID_REQUIRED_APP_NAMES_JSON)
+              REQUIRE_INTUNE: $(AVD_HYBRID_REQUIRE_INTUNE_COMPLIANT)
+              REQUIRE_MDE: $(AVD_HYBRID_REQUIRE_MDE)
+              TIMEOUT_MINUTES: $(AVD_HYBRID_READINESS_TIMEOUT_MINUTES)
+            inputs:
+              azureSubscription: $(AVD_HYBRID_READINESS_SERVICE_CONNECTION)
+              scriptType: pscore
+              scriptLocation: inlineScript
+              inlineScript: |
+                $apps = @($env:REQUIRED_APPS | ConvertFrom-Json)
+                & 'AzureVirtualDesktopPoc/scripts/Wait-AvdHybridReadiness.ps1' `
+                  -SubscriptionId $env:SUBSCRIPTION_ID -TenantId $env:TENANT_ID `
+                  -ArcResourceGroupName $env:ARC_RESOURCE_GROUP -PlatformResourceGroupName $env:ARC_RESOURCE_GROUP `
+                  -HostPoolName $env:HOST_POOL_NAME -VmName $env:VM_NAME `
+                  -ExpectedGpuVendor $env:EXPECTED_GPU_VENDOR -RequiredApplications $apps `
+                  -RequireIntuneCompliance ($env:REQUIRE_INTUNE -ieq 'true') -RequireMde ($env:REQUIRE_MDE -ieq 'true') `
+                  -TimeoutMinutes ([int]$env:TIMEOUT_MINUTES) -ReportPath '$(artifactDirectory)/readiness.json'
+          - task: PublishPipelineArtifact@1
+            condition: always()
+            inputs:
+              targetPath: $(artifactDirectory)
+              artifact: avd-hybrid-readiness-${{ parameters.requestedHostName }}
+
+  - stage: Assign
+    displayName: Assign ready personal hybrid desktop
+    dependsOn: Readiness
+    condition: succeeded()
+    jobs:
+      - job: AssignUser
+        pool:
+          vmImage: windows-latest
+        steps:
+          - task: AzureCLI@2
+            displayName: Grant login roles and direct host assignment
+            env:
+              SUBSCRIPTION_ID: $(AVD_HYBRID_SUBSCRIPTION_ID)
+              TENANT_ID: $(AVD_HYBRID_TENANT_ID)
+              RESOURCE_GROUP: $(AVD_HYBRID_RESOURCE_GROUP)
+              HOST_POOL_NAME: $(AVD_HYBRID_HOST_POOL_NAME)
+              APP_GROUP_NAME: $(AVD_HYBRID_DESKTOP_APP_GROUP_NAME)
+              VM_NAME: ${{ parameters.requestedHostName }}
+              REQUESTED_FOR_UPN: ${{ parameters.requestedForUpn }}
+            inputs:
+              azureSubscription: $(AVD_HYBRID_ASSIGNMENT_SERVICE_CONNECTION)
+              scriptType: pscore
+              scriptLocation: inlineScript
+              inlineScript: |
+                & 'AzureVirtualDesktopPoc/scripts/Set-AvdHybridPersonalDesktopAssignment.ps1' `
+                  -SubscriptionId $env:SUBSCRIPTION_ID -TenantId $env:TENANT_ID `
+                  -ArcResourceGroupName $env:RESOURCE_GROUP -PlatformResourceGroupName $env:RESOURCE_GROUP `
+                  -HostPoolName $env:HOST_POOL_NAME -ApplicationGroupName $env:APP_GROUP_NAME `
+                  -VmName $env:VM_NAME -RequestedForUpn $env:REQUESTED_FOR_UPN
+
+  - stage: NotifyReady
+    displayName: Mark ServiceNow request ready
+    dependsOn: Assign
+    condition: succeeded()
+    jobs:
+      - job: ServiceNowReady
+        pool:
+          vmImage: windows-latest
+        steps:
+          - task: PowerShell@2
+            displayName: Write hybrid handoff to ServiceNow
+            env:
+              SN_INSTANCE_URL: $(SN_INSTANCE_URL)
+              SN_CLIENT_ID: $(SN_CLIENT_ID)
+              SN_CLIENT_SECRET: $(SN_CLIENT_SECRET)
+              SN_USERNAME: $(SN_USERNAME)
+              SN_PASSWORD: $(SN_PASSWORD)
+              RITM_SYS_ID: ${{ parameters.ritmSysId }}
+              HOST_NAME: ${{ parameters.requestedHostName }}
+              REQUESTED_FOR_UPN: ${{ parameters.requestedForUpn }}
+              STATUS_FIELD: $(SN_STATUS_FIELD)
+              HOST_NAME_FIELD: $(SN_HOSTNAME_FIELD)
+              PLATFORM_FIELD: $(SN_PLATFORM_FIELD)
+            inputs:
+              pwsh: true
+              targetType: inline
+              script: |
+                & 'AzureVirtualDesktopPoc/scripts/Update-ServiceNowRitm.ps1' `
+                  -InstanceUrl $env:SN_INSTANCE_URL -ClientId $env:SN_CLIENT_ID -ClientSecret $env:SN_CLIENT_SECRET `
+                  -UserName $env:SN_USERNAME -Password $env:SN_PASSWORD -RitmSysId $env:RITM_SYS_ID `
+                  -Status 'Ready' -HostName $env:HOST_NAME -Platform 'Hybrid GPU' `
+                  -StatusField $env:STATUS_FIELD -HostNameField $env:HOST_NAME_FIELD -PlatformField $env:PLATFORM_FIELD `
+                  -Message "Hybrid GPU desktop $($env:HOST_NAME) passed all readiness gates and was assigned to $($env:REQUESTED_FOR_UPN). Build $(Build.BuildId)."
+
+  - stage: NotifyFailure
+    displayName: Preserve Proxmox VM and report failure
+    dependsOn:
+      - ValidateRequest
+      - ValidateArc
+      - EnrollAndRegister
+      - Readiness
+      - Assign
+      - NotifyReady
+    condition: failed()
+    variables:
+      validateRequestResult: $[ dependencies.ValidateRequest.result ]
+      validateArcResult: $[ dependencies.ValidateArc.result ]
+      enrollResult: $[ dependencies.EnrollAndRegister.result ]
+      readinessResult: $[ dependencies.Readiness.result ]
+      assignResult: $[ dependencies.Assign.result ]
+      notifyResult: $[ dependencies.NotifyReady.result ]
+    jobs:
+      - job: DrainAndNotify
+        pool:
+          vmImage: windows-latest
+        steps:
+          - task: AzureCLI@2
+            displayName: Place registered host in drain mode
+            continueOnError: true
+            inputs:
+              azureSubscription: $(AVD_HYBRID_ASSIGNMENT_SERVICE_CONNECTION)
+              scriptType: pscore
+              scriptLocation: inlineScript
+              inlineScript: |
+                & 'AzureVirtualDesktopPoc/scripts/Set-AvdDrainMode.ps1' `
+                  -SubscriptionId '$(AVD_HYBRID_SUBSCRIPTION_ID)' `
+                  -PlatformResourceGroupName '$(AVD_HYBRID_RESOURCE_GROUP)' `
+                  -HostPoolName '$(AVD_HYBRID_HOST_POOL_NAME)' `
+                  -VmName '${{ parameters.requestedHostName }}'
+          - task: PowerShell@2
+            displayName: Write failed gate and run URL to ServiceNow
+            continueOnError: true
+            env:
+              SN_INSTANCE_URL: $(SN_INSTANCE_URL)
+              SN_CLIENT_ID: $(SN_CLIENT_ID)
+              SN_CLIENT_SECRET: $(SN_CLIENT_SECRET)
+              SN_USERNAME: $(SN_USERNAME)
+              SN_PASSWORD: $(SN_PASSWORD)
+              RITM_SYS_ID: ${{ parameters.ritmSysId }}
+              HOST_NAME: ${{ parameters.requestedHostName }}
+              STATUS_FIELD: $(SN_STATUS_FIELD)
+              HOST_NAME_FIELD: $(SN_HOSTNAME_FIELD)
+              PLATFORM_FIELD: $(SN_PLATFORM_FIELD)
+              VALIDATE_REQUEST_RESULT: $(validateRequestResult)
+              VALIDATE_ARC_RESULT: $(validateArcResult)
+              ENROLL_RESULT: $(enrollResult)
+              READINESS_RESULT: $(readinessResult)
+              ASSIGN_RESULT: $(assignResult)
+              NOTIFY_RESULT: $(notifyResult)
+              BUILD_URL: $(System.CollectionUri)$(System.TeamProject)/_build/results?buildId=$(Build.BuildId)
+            inputs:
+              pwsh: true
+              targetType: inline
+              script: |
+                $gates = [ordered]@{
+                  ValidateRequest = $env:VALIDATE_REQUEST_RESULT
+                  ValidateArc = $env:VALIDATE_ARC_RESULT
+                  EnrollAndRegister = $env:ENROLL_RESULT
+                  Readiness = $env:READINESS_RESULT
+                  Assign = $env:ASSIGN_RESULT
+                  NotifyReady = $env:NOTIFY_RESULT
+                }
+                $failedGate = ($gates.GetEnumerator() | Where-Object Value -eq 'Failed' | Select-Object -First 1).Key
+                if (-not $failedGate) { $failedGate = 'Unknown' }
+                & 'AzureVirtualDesktopPoc/scripts/Update-ServiceNowRitm.ps1' `
+                  -InstanceUrl $env:SN_INSTANCE_URL -ClientId $env:SN_CLIENT_ID -ClientSecret $env:SN_CLIENT_SECRET `
+                  -UserName $env:SN_USERNAME -Password $env:SN_PASSWORD -RitmSysId $env:RITM_SYS_ID `
+                  -Status 'Failed' -HostName $env:HOST_NAME -Platform 'Hybrid GPU' `
+                  -StatusField $env:STATUS_FIELD -HostNameField $env:HOST_NAME_FIELD -PlatformField $env:PLATFORM_FIELD `
+                  -Message "Hybrid GPU onboarding failed at gate '$failedGate'. The Proxmox VM was preserved and drain mode was requested if registered. Review $($env:BUILD_URL)."

@@ -1,0 +1,106 @@
+trigger: none
+pr: none
+
+parameters:
+  - name: azureServiceConnection
+    type: string
+  - name: subscriptionId
+    type: string
+  - name: location
+    type: string
+    default: centralus
+  - name: parametersFile
+    type: string
+    default: AzureVirtualDesktopPoc/infra/parameters/poc.bicepparam
+
+stages:
+  - stage: Validate
+    jobs:
+      - job: BicepAndWhatIf
+        pool:
+          vmImage: windows-latest
+        steps:
+          - task: AzureCLI@2
+            displayName: Validate Bicep and reject destructive changes
+            inputs:
+              azureSubscription: ${{ parameters.azureServiceConnection }}
+              scriptType: pscore
+              scriptLocation: inlineScript
+              inlineScript: |
+                $ErrorActionPreference = 'Stop'
+                az account set --subscription '${{ parameters.subscriptionId }}'
+                az bicep build --file 'AzureVirtualDesktopPoc/infra/main.bicep'
+                $result = az deployment sub what-if `
+                  --name "avd-poc-whatif-$(Build.BuildId)" `
+                  --location '${{ parameters.location }}' `
+                  --subscription '${{ parameters.subscriptionId }}' `
+                  --parameters '${{ parameters.parametersFile }}' `
+                  --result-format FullResourcePayloads `
+                  --no-pretty-print `
+                  --output json
+                if ($LASTEXITCODE -ne 0) { throw 'Azure what-if failed.' }
+                $resultText = $result -join [Environment]::NewLine
+                $whatIf = $resultText | ConvertFrom-Json -Depth 100
+                $blocked = @($whatIf.changes | Where-Object changeType -In @('Delete', 'Recreate'))
+                if ($blocked.Count -gt 0) {
+                  throw "What-if contains $($blocked.Count) delete or recreate operation(s). Deployment is blocked."
+                }
+                $resultText | Set-Content '$(Build.ArtifactStagingDirectory)/what-if.json' -Encoding utf8
+          - publish: $(Build.ArtifactStagingDirectory)/what-if.json
+            artifact: avd-poc-what-if
+
+  - stage: Deploy
+    dependsOn: Validate
+    condition: succeeded()
+    jobs:
+      - deployment: AdditivePlatformDeployment
+        environment: avd-poc-platform
+        pool:
+          vmImage: windows-latest
+        strategy:
+          runOnce:
+            deploy:
+              steps:
+                - checkout: self
+                - task: AzureCLI@2
+                  displayName: Deploy in incremental mode
+                  inputs:
+                    azureSubscription: ${{ parameters.azureServiceConnection }}
+                    scriptType: pscore
+                    scriptLocation: inlineScript
+                    inlineScript: |
+                      $ErrorActionPreference = 'Stop'
+                      $deployment = az deployment sub create `
+                        --name "avd-poc-platform-$(Build.BuildId)" `
+                        --location '${{ parameters.location }}' `
+                        --subscription '${{ parameters.subscriptionId }}' `
+                        --parameters '${{ parameters.parametersFile }}' `
+                        --output json `
+                        --only-show-errors | ConvertFrom-Json -Depth 100
+                      if ($LASTEXITCODE -ne 0) { throw 'Additive platform deployment failed.' }
+                      $resourceGroupName = [string]$deployment.properties.outputs.resourceGroupName.value
+                      $hostPoolName = [string]$deployment.properties.outputs.hostPoolName.value
+                      $hostPoolId = "/subscriptions/${{ parameters.subscriptionId }}/resourceGroups/$resourceGroupName/providers/Microsoft.DesktopVirtualization/hostPools/$hostPoolName"
+                      $body = @{
+                        properties = @{
+                          registrationInfo = @{
+                            expirationTime = [DateTime]::UtcNow.AddHours(24).ToString('o')
+                            registrationTokenOperation = 'Update'
+                          }
+                        }
+                      } | ConvertTo-Json -Depth 10 -Compress
+                      $bodyPath = Join-Path '$(Agent.TempDirectory)' 'host-pool-registration.json'
+                      try {
+                        $body | Set-Content -LiteralPath $bodyPath -Encoding utf8
+                        az rest `
+                          --method PATCH `
+                          --url "https://management.azure.com${hostPoolId}?api-version=2024-04-03" `
+                          --headers 'Content-Type=application/json' `
+                          --body "@$bodyPath" `
+                          --output none `
+                          --only-show-errors
+                        if ($LASTEXITCODE -ne 0) { throw 'Unable to initialize the AVD registration-token window.' }
+                      }
+                      finally {
+                        Remove-Item -LiteralPath $bodyPath -Force -ErrorAction SilentlyContinue
+                      }

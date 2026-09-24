@@ -1,0 +1,34 @@
+{
+  "schemaVersion": 1,
+  "id": "lob-app-1",
+  "displayName": "LOB App 1",
+  "publisher": "Client Name",
+  "classification": "baseline",
+  "lifecycle": {
+    "strategy": "psadtWin32",
+    "updateAuthority": "gitPipeline",
+    "discovery": "internalRelease",
+    "autoUpdate": false,
+    "version": "1.0.0"
+  },
+  "assignment": {
+    "intent": "required",
+    "target": "baselineDevices",
+    "notifications": "hideAll"
+  },
+  "installContext": "system",
+  "payload": {
+    "fileName": "LobApp1-x64.msi",
+    "expectedPublisher": "REPLACE-WITH-SIGNING-SUBJECT",
+    "sha256": "REPLACE-WITH-SHA256"
+  },
+  "detection": {
+    "type": "msiProductCode",
+    "productCode": "{REPLACE-WITH-MSI-PRODUCT-CODE}",
+    "operator": "greaterThanOrEqual",
+    "version": "1.0.0"
+  },
+  "owner": "Business Application Team",
+  "notes": "Small required baseline example with a controlled PSADT installation."
+}
+

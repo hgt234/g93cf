@@ -41,6 +41,10 @@ function Get-RegistryKeySnapshot {
         SubKeys = @()
         Error   = $null
     }
+    foreach ($name in $ValueNames) {
+        $displayName = if ([string]::IsNullOrEmpty($name)) { '(Default)' } else { $name }
+        $snapshot.Values[$displayName] = $null
+    }
     $baseKey = $null
     $key = $null
 

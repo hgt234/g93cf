@@ -1,0 +1,125 @@
+trigger: none
+pr: none
+
+parameters:
+  - name: azureServiceConnection
+    type: string
+  - name: subscriptionId
+    type: string
+  - name: tenantId
+    type: string
+  - name: pocId
+    type: string
+    default: POC01
+  - name: resourceGroupNames
+    type: object
+    default:
+      - rg-avd-poc01
+      - rg-avd-poc01-aib-stage
+  - name: hostPoolResourceGroupName
+    type: string
+    default: ''
+  - name: hostPoolName
+    type: string
+    default: ''
+  - name: removeDirectoryRecords
+    type: boolean
+    default: false
+  - name: execute
+    type: boolean
+    default: false
+  - name: confirmationText
+    type: string
+    default: PLAN-ONLY
+
+variables:
+  reportDirectory: $(Build.ArtifactStagingDirectory)/avd-poc-decommission
+
+stages:
+  - stage: Plan
+    jobs:
+      - job: InventoryAndValidate
+        pool:
+          vmImage: windows-latest
+        steps:
+          - task: AzureCLI@2
+            displayName: Inventory and validate safety tags
+            env:
+              RESOURCE_GROUP_JSON: ${{ convertToJson(parameters.resourceGroupNames) }}
+            inputs:
+              azureSubscription: ${{ parameters.azureServiceConnection }}
+              scriptType: pscore
+              scriptLocation: inlineScript
+              inlineScript: |
+                $ErrorActionPreference = 'Stop'
+                New-Item -ItemType Directory -Path '$(reportDirectory)' -Force | Out-Null
+                $groups = @($env:RESOURCE_GROUP_JSON | ConvertFrom-Json)
+                $arguments = @{
+                  PocId = '${{ parameters.pocId }}'
+                  SubscriptionId = '${{ parameters.subscriptionId }}'
+                  TenantId = '${{ parameters.tenantId }}'
+                  ResourceGroupName = $groups
+                  ReportPath = '$(reportDirectory)/plan.json'
+                }
+                if ('${{ parameters.hostPoolName }}') {
+                  $arguments.HostPoolName = '${{ parameters.hostPoolName }}'
+                  $arguments.HostPoolResourceGroupName = '${{ parameters.hostPoolResourceGroupName }}'
+                }
+                if ('${{ parameters.removeDirectoryRecords }}' -eq 'true') {
+                  $arguments.RemoveDirectoryRecords = $true
+                }
+                & 'AzureVirtualDesktopPoc/scripts/Remove-AvdPoc.ps1' @arguments
+          - task: PublishPipelineArtifact@1
+            condition: always()
+            inputs:
+              targetPath: $(reportDirectory)
+              artifact: avd-poc-decommission-plan
+
+  - stage: Decommission
+    displayName: Destructive decommission
+    dependsOn: Plan
+    condition: and(succeeded(), ${{ eq(parameters.execute, true) }})
+    jobs:
+      - deployment: ApprovedTeardown
+        environment: avd-poc-decommission
+        pool:
+          vmImage: windows-latest
+        strategy:
+          runOnce:
+            deploy:
+              steps:
+                - checkout: self
+                - task: AzureCLI@2
+                  displayName: Deallocate and delete validated POC resources
+                  env:
+                    RESOURCE_GROUP_JSON: ${{ convertToJson(parameters.resourceGroupNames) }}
+                  inputs:
+                    azureSubscription: ${{ parameters.azureServiceConnection }}
+                    scriptType: pscore
+                    scriptLocation: inlineScript
+                    inlineScript: |
+                      $ErrorActionPreference = 'Stop'
+                      New-Item -ItemType Directory -Path '$(reportDirectory)' -Force | Out-Null
+                      $groups = @($env:RESOURCE_GROUP_JSON | ConvertFrom-Json)
+                      $arguments = @{
+                        PocId = '${{ parameters.pocId }}'
+                        SubscriptionId = '${{ parameters.subscriptionId }}'
+                        TenantId = '${{ parameters.tenantId }}'
+                        ResourceGroupName = $groups
+                        Execute = $true
+                        ConfirmationText = '${{ parameters.confirmationText }}'
+                        ReportPath = '$(reportDirectory)/execution.json'
+                      }
+                      if ('${{ parameters.hostPoolName }}') {
+                        $arguments.HostPoolName = '${{ parameters.hostPoolName }}'
+                        $arguments.HostPoolResourceGroupName = '${{ parameters.hostPoolResourceGroupName }}'
+                      }
+                      if ('${{ parameters.removeDirectoryRecords }}' -eq 'true') {
+                        $arguments.RemoveDirectoryRecords = $true
+                      }
+                      & 'AzureVirtualDesktopPoc/scripts/Remove-AvdPoc.ps1' @arguments -Confirm:$false
+                - task: PublishPipelineArtifact@1
+                  condition: always()
+                  inputs:
+                    targetPath: $(reportDirectory)
+                    artifact: avd-poc-decommission-execution

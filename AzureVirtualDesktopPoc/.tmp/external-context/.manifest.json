@@ -1,0 +1,17 @@
+{
+  "version": "1.0",
+  "last_updated": "2026-09-17T00:00:00Z",
+  "libraries": {
+    "azure-vm-sizes": {
+      "files": [
+        {
+          "filename": "disk-controller-gen2-trusted-launch.md",
+          "topic": "D4s v6/v5 and E4bds/E4bs v5 disk-controller, Gen2, and Trusted Launch compatibility",
+          "tech_stack": "Azure Compute Gallery; Windows 11 24H2",
+          "fetched": "2026-09-17T00:00:00Z",
+          "source": "Microsoft Learn official Azure documentation"
+        }
+      ]
+    }
+  }
+}

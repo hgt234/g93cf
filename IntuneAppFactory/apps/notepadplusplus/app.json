@@ -1,0 +1,37 @@
+{
+  "schemaVersion": 1,
+  "id": "notepadplusplus",
+  "displayName": "Notepad++",
+  "publisher": "Notepad++ Team",
+  "classification": "selfService",
+  "lifecycle": {
+    "strategy": "psadtWin32",
+    "updateAuthority": "gitPipeline",
+    "discovery": "winget",
+    "wingetPackageId": "Notepad++.Notepad++",
+    "autoUpdate": true,
+    "autoUpdateMechanism": "intuneAvailableSupersedence",
+    "version": "REPLACE-WITH-VENDOR-VERSION"
+  },
+  "assignment": {
+    "intent": "available",
+    "target": "allUsers",
+    "notifications": "showAll"
+  },
+  "installContext": "system",
+  "payload": {
+    "fileName": "notepad-plus-plus-x64.exe",
+    "expectedPublisher": "Notepad++",
+    "sha256": "REPLACE-WITH-SHA256"
+  },
+  "detection": {
+    "type": "fileVersion",
+    "path": "%ProgramFiles%\\Notepad++",
+    "file": "notepad++.exe",
+    "operator": "greaterThanOrEqual",
+    "version": "REPLACE-WITH-VENDOR-VERSION"
+  },
+  "owner": "Endpoint Engineering",
+  "notes": "Available EAC auto-update is not hands-off, so the Git pipeline publishes superseding PSADT versions."
+}
+

@@ -1,0 +1,8 @@
+Artifacts/
+Build/
+Tooling/
+config/targets.json
+apps/*/Payload/*
+!apps/*/Payload/.gitkeep
+*.intunewin
+

@@ -1,0 +1,20 @@
+{
+  "schemaVersion": 1,
+  "targets": {
+    "allUsers": {
+      "type": "allUsers"
+    },
+    "allDevices": {
+      "type": "allDevices"
+    },
+    "baselineDevices": {
+      "type": "group",
+      "groupId": "REPLACE-WITH-ENTRA-GROUP-ID"
+    },
+    "pilotUsers": {
+      "type": "group",
+      "groupId": "REPLACE-WITH-ENTRA-GROUP-ID"
+    }
+  }
+}
+

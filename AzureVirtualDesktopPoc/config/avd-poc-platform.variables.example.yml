@@ -1,0 +1,26 @@
+# Create an Azure DevOps variable group named avd-poc-platform with these values.
+# Replace every example value before running a session-host pipeline.
+variables:
+  AVD_POC_ID: POC01
+  AVD_SUBSCRIPTION_ID: 00000000-0000-0000-0000-000000000000
+  AVD_TENANT_ID: 00000000-0000-0000-0000-000000000000
+  AVD_LOCATION: centralus
+  AVD_SESSION_HOST_RESOURCE_GROUP: rg-avd-poc01
+  AVD_PLATFORM_RESOURCE_GROUP: rg-avd-poc01
+  AVD_HOST_POOL_NAME: vdpool-avd-poc01
+  AVD_DESKTOP_APP_GROUP_NAME: vdag-avd-poc01
+  AVD_SESSION_HOST_SUBNET_ID: /subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/rg-avd-poc01/providers/Microsoft.Network/virtualNetworks/vnet-avd-poc01/subnets/snet-sessionhosts
+  AVD_VM_SIZE: Standard_E4bs_v5
+  AVD_OS_DISK_SKU: StandardSSD_LRS
+  AVD_IMAGE_SOURCE_TYPE: Gallery
+  AVD_GALLERY_IMAGE_DEFINITION_ID: /subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/rg-avd-poc01/providers/Microsoft.Compute/galleries/acgavdpoc01/images/win11-avd-personal
+  # Leave blank to resolve the latest non-excluded version at deployment time, or pin a version ID.
+  AVD_GALLERY_IMAGE_VERSION_ID: ''
+  AVD_DSC_CONFIGURATION_URI: https://wvdportalstorageblob.blob.core.windows.net/galleryartifacts/Configuration_1.0.02774.414.zip
+  AVD_REQUIRED_APP_NAMES_JSON: '["Microsoft 365 Apps for enterprise - en-us"]'
+  AVD_REQUIRE_INTUNE_COMPLIANT: 'false'
+  AVD_REQUIRE_MDE: 'true'
+  AVD_READINESS_TIMEOUT_MINUTES: '100'
+  AVD_DEPLOYMENT_SERVICE_CONNECTION: sc-avd-poc-deploy
+  AVD_READINESS_SERVICE_CONNECTION: sc-avd-poc-readiness
+  AVD_ASSIGNMENT_SERVICE_CONNECTION: sc-avd-poc-assignment
