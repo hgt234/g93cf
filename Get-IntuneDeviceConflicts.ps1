@@ -1,23 +1,31 @@
 #Requires -Version 7.0
-#Requires -Modules Microsoft.Graph.Authentication
 
 <#
 .SYNOPSIS
 Read-only Intune configuration conflict investigation for one Windows device.
 .DESCRIPTION
-Requests only DeviceManagementManagedDevices.Read.All and
+Uses interactive browser authentication through Microsoft Graph PowerShell and
+requests only DeviceManagementManagedDevices.Read.All and
 DeviceManagementConfiguration.Read.All. GET reads device/configuration states;
 POST is restricted to three report retrieval actions. No sync, remediation,
 policy/assignment changes, export jobs, module installation, or report files.
 
+Requires Microsoft.Graph.Authentication 2.35.1. The version is pinned because
+later releases can require System.Text.Json 10 on older PowerShell 7 runtimes.
+
 Returns Device, Policies, PolicyObservations, PolicyConflicts, Settings,
 Conflicts, UnclassifiedSettings, Issues, and HasInvestigationGaps.
+ConflictReview joins policy identity with conflicting setting details, and
+includes unresolved policy conflicts. ExportPath writes it to ConflictReview.csv.
+Contributing policies are shown only when reported by Intune; matching setting
+names do not establish which two policies conflict with one another.
 Policy conflict rollups are never stamped onto individual settings.
 Legacy and modern observations may overlap; counts are not unique settings.
 
-Use a dedicated PowerShell session: Connect-MgGraph changes its authentication
-context. Authentication can create normal sign-in/audit records. This script
-is read-only with respect to Intune configuration and the managed device.
+Connect-MgGraph uses the system browser, allowing Conditional Access policies
+that block device-code authentication to run normally. Authentication can
+create normal sign-in/audit records. This script is read-only with respect to
+Intune configuration and the managed device.
 
 Modern reports use beta APIs. Numeric status codes are preserved, not guessed.
 An empty conflict list is not proof that the device is conflict-free. Results
@@ -25,11 +33,15 @@ depend on RBAC/scope tags and the last reported device state, not live state.
 Contributing policies/current values are returned only when the API supplies
 them; matching setting names alone do not prove a conflicting policy pair.
 
-Review validation: statically reviewed; not executed against a tenant.
+Review validation: mock-tested; not executed against a tenant.
 .PARAMETER ManagedDeviceId
 Intune managed device ID, NOT the Entra device ID.
 .PARAMETER TenantId
 Tenant GUID or verified tenant domain. Microsoft public cloud only.
+.PARAMETER ExportPath
+Optional directory for a timestamped CSV export bundle. When supplied, export is
+enabled automatically. CSV files contain configuration and assignment data and
+should be handled as sensitive.
 .EXAMPLE
 $r = .\Get-IntuneDeviceConflicts.ps1 -TenantId contoso.onmicrosoft.com -DeviceName PC-123
 $r.Conflicts | Format-List *
@@ -38,6 +50,8 @@ $r.Issues | Format-Table -Wrap
 .EXAMPLE
 $r = .\Get-IntuneDeviceConflicts.ps1 -TenantId contoso.onmicrosoft.com -ManagedDeviceId '11111111-2222-3333-4444-555555555555'
 $r.Settings | Where-Object SettingId -eq 'SETTING-ID' | Format-List *
+.EXAMPLE
+.\Get-IntuneDeviceConflicts.ps1 -TenantId contoso.onmicrosoft.com -DeviceName PC-123 -ExportPath C:\Temp\IntuneReports
 .LINK
 https://learn.microsoft.com/en-us/graph/api/resources/intune-deviceconfig-deviceconfigurationsettingstate?view=graph-rest-1.0
 .LINK
@@ -55,7 +69,10 @@ param(
     [string] $DeviceName,
 
     [Parameter(Mandatory, ParameterSetName = 'Id')]
-    [guid] $ManagedDeviceId
+    [guid] $ManagedDeviceId,
+
+    [ValidateNotNullOrEmpty()]
+    [string] $ExportPath
 )
 
 $ErrorActionPreference = 'Stop'
@@ -68,6 +85,10 @@ $reportActions = @(
     'getConfigurationSettingsReport'
     'getConfigurationSettingNonComplianceReport'
 )
+
+if ($ExportPath -and [IO.Path]::GetExtension($ExportPath) -ieq '.csv') {
+    throw "ExportPath must be a directory, not a CSV filename. Use a path such as 'C:\Temp\IntuneReports'."
+}
 
 function Add-Issue {
     param([string] $Area, [string] $Message)
@@ -87,6 +108,104 @@ function Get-Field {
 function Quote-FilterValue {
     param([AllowEmptyString()][string] $Value)
     return "'" + $Value.Replace("'", "''") + "'"
+}
+
+function ConvertTo-ExportValue {
+    param([AllowNull()][object] $Value)
+    if ($null -eq $Value) { return $null }
+    if ($Value -is [datetime]) { return $Value.ToUniversalTime().ToString('o') }
+    if ($Value -is [datetimeoffset]) { return $Value.ToUniversalTime().ToString('o') }
+    if ($Value -isnot [string] -and $Value.GetType().IsPrimitive) { return $Value }
+    if ($Value -is [decimal]) { return $Value }
+
+    $text = if ($Value -is [string] -or $Value -is [guid]) {
+        [string]$Value
+    }
+    else {
+        ConvertTo-Json -InputObject $Value -Depth 30 -Compress
+    }
+    # Prevent values supplied by Graph from becoming formulas when opened in Excel.
+    if ($text -match '^[=+\-@\t\r]') { return "'$text" }
+    return $text
+}
+
+function ConvertTo-ExportRow {
+    param([Parameter(Mandatory)][object] $InputObject)
+    $row = [ordered]@{}
+    if ($InputObject -is [System.Collections.IDictionary]) {
+        foreach ($key in $InputObject.Keys) {
+            $row[[string]$key] = ConvertTo-ExportValue $InputObject[$key]
+        }
+    }
+    else {
+        foreach ($property in $InputObject.PSObject.Properties) {
+            if ($property.MemberType -in @('NoteProperty', 'Property', 'AliasProperty')) {
+                $row[$property.Name] = ConvertTo-ExportValue $property.Value
+            }
+        }
+    }
+    return [pscustomobject]$row
+}
+
+function Export-DataSet {
+    param(
+        [Parameter(Mandatory)][AllowEmptyCollection()][object[]] $Data,
+        [Parameter(Mandatory)][string] $Path
+    )
+    if ($Data.Count -eq 0) { return }
+    @($Data | ForEach-Object { ConvertTo-ExportRow $_ }) |
+        Export-Csv -LiteralPath $Path -NoTypeInformation -Encoding utf8NoBOM
+}
+
+function Get-ConflictReview {
+    param([object[]] $Settings, [object[]] $PolicyObservations)
+    $conflictedSettings = @($Settings | Where-Object Classification -eq 'Conflict')
+    foreach ($setting in $conflictedSettings) {
+        [pscustomobject][ordered]@{
+            Finding = 'Setting conflict'
+            PolicyName = $setting.PolicyName
+            PolicyId = $setting.PolicyId
+            StateRecordId = $setting.StateRecordId
+            SettingName = $setting.SettingName
+            SettingId = $setting.SettingId
+            Instance = $setting.Instance
+            ReportedValue = $setting.CurrentValue
+            ReportedContributingPolicies = $setting.ReportedContributors
+            UserId = $setting.UserId
+            UPN = $setting.UPN
+            Source = $setting.Source
+            NextAction = 'Review this setting in the identified policy and any reported contributing policies; verify intended values and assignments.'
+        }
+    }
+    foreach ($policy in @($PolicyObservations | Where-Object Classification -eq 'Conflict')) {
+        $resolved = @($conflictedSettings | Where-Object {
+            $_.Source -eq $policy.Source -and
+            (($policy.PolicyId -and $_.PolicyId -eq $policy.PolicyId -and $_.UserId -eq $policy.UserId) -or
+             ($policy.StateRecordId -and $_.StateRecordId -eq $policy.StateRecordId))
+        })
+        # Modern policy and setting reports have different action names.
+        if ($policy.PolicyId) {
+            $resolved = @($conflictedSettings | Where-Object {
+                $_.PolicyId -eq $policy.PolicyId -and $_.UserId -eq $policy.UserId
+            })
+        }
+        if ($resolved.Count) { continue }
+        [pscustomobject][ordered]@{
+            Finding = 'Setting unresolved'
+            PolicyName = $policy.PolicyName
+            PolicyId = $policy.PolicyId
+            StateRecordId = $policy.StateRecordId
+            SettingName = $null
+            SettingId = $null
+            Instance = $null
+            ReportedValue = $null
+            ReportedContributingPolicies = $null
+            UserId = $policy.UserId
+            UPN = $policy.UPN
+            Source = $policy.Source
+            NextAction = 'Policy reports conflict but no conflicting setting was retrieved. Check Issues.csv and the device per-setting status in Intune.'
+        }
+    }
 }
 
 function Invoke-ReadRequest {
@@ -126,7 +245,29 @@ function Invoke-ReadRequest {
         $request.Body = ConvertTo-Json -InputObject $Body -Depth 10
         $request.ContentType = 'application/json'
     }
-    $json = Invoke-MgGraphRequest @request
+    try {
+        $json = Invoke-MgGraphRequest @request
+    }
+    catch {
+        $detail = $null
+        $candidates = @($_.ErrorDetails.Message, $_.Exception.Message) | Where-Object { $_ }
+        if ($_.Exception.Response -and $_.Exception.Response.Content) {
+            try {
+                $responseText = $_.Exception.Response.Content.ReadAsStringAsync().GetAwaiter().GetResult()
+                if ($responseText) { $candidates = @($responseText) + $candidates }
+            }
+            catch { }
+        }
+        foreach ($candidate in $candidates) {
+            try {
+                $errorDocument = $candidate | ConvertFrom-Json
+                if ($errorDocument.error.message) { $detail = [string]$errorDocument.error.message; break }
+            }
+            catch { }
+            if (-not $detail) { $detail = [string]$candidate }
+        }
+        throw "Microsoft Graph $Method $($address.AbsolutePath) failed: $detail"
+    }
     return ($json | ConvertFrom-Json -AsHashtable)
 }
 
@@ -143,14 +284,19 @@ function Get-Collection {
 }
 
 function Get-Report {
-    param([string] $Action, [string] $Filter)
+    param(
+        [string] $Action,
+        [string] $Filter,
+        [string[]] $Select = @(),
+        [string[]] $OrderBy = @()
+    )
     $skip = 0
     $pageSize = 100
     $previousPage = $null
     while ($true) {
         $page = Invoke-ReadRequest -Method POST `
             -Uri "$graph/beta/deviceManagement/reports/$Action" `
-            -Body @{ select = @(); filter = $Filter; skip = $skip; top = $pageSize; orderBy = @() }
+            -Body @{ select = $Select; filter = $Filter; skip = $skip; top = $pageSize; orderBy = $OrderBy }
         if (-not $page.ContainsKey('Schema') -or -not $page.ContainsKey('Values')) {
             throw "Unexpected response schema from $Action."
         }
@@ -190,15 +336,38 @@ function Get-Report {
 function Get-StateClassification {
     param([AllowEmptyString()][string] $State)
     switch -Regex ($State.Trim()) {
-        '^conflict$' { return 'Conflict' }
-        '^(success|succeeded|compliant|remediated|error|not.?applicable|not.?assigned|non.?compliant|pending|unknown)$' {
+        '^(conflict|6)$' { return 'Conflict' }
+        '^([1-5]|success|succeeded|compliant|remediated|error|not.?applicable|not.?assigned|non.?compliant|pending|unknown)$' {
             return 'Other'
         }
         default { return 'Unclassified' }
     }
 }
 
-Import-Module Microsoft.Graph.Authentication
+$requiredGraphAuthVersion = [version]'2.35.1'
+$loadedGraphAuth = Get-Module -Name Microsoft.Graph.Authentication
+if ($loadedGraphAuth -and $loadedGraphAuth.Version -ne $requiredGraphAuthVersion) {
+    throw (
+        "Microsoft.Graph.Authentication $($loadedGraphAuth.Version) is already loaded, but this script requires " +
+        "$requiredGraphAuthVersion to avoid the System.Text.Json 10 load failure. Close this PowerShell session " +
+        'and run the script in a new session.'
+    )
+}
+$graphAuthModule = Get-Module -ListAvailable -Name Microsoft.Graph.Authentication |
+    Where-Object Version -eq $requiredGraphAuthVersion |
+    Select-Object -First 1
+if (-not $graphAuthModule) {
+    throw (
+        "Microsoft.Graph.Authentication $requiredGraphAuthVersion is required. Install it, then start a new " +
+        "PowerShell session: Install-Module Microsoft.Graph.Authentication -RequiredVersion " +
+        "$requiredGraphAuthVersion -Scope CurrentUser -Force -AllowClobber"
+    )
+}
+Import-Module -FullyQualifiedName @{
+    ModuleName = 'Microsoft.Graph.Authentication'
+    RequiredVersion = $requiredGraphAuthVersion
+} -ErrorAction Stop
+
 Connect-MgGraph -TenantId $TenantId -Environment Global `
     -Scopes @('DeviceManagementManagedDevices.Read.All', 'DeviceManagementConfiguration.Read.All') `
     -ContextScope Process -NoWelcome | Out-Null
@@ -231,8 +400,18 @@ Write-Host 'Reading policy and setting reports...'
 
 $policies = @()
 try {
+    $supportedPolicyTypes = @(
+        "(PolicyBaseTypeName eq 'Microsoft.Management.Services.Api.DeviceConfiguration')"
+        "(PolicyBaseTypeName eq 'DeviceManagementConfigurationPolicy')"
+        "(PolicyBaseTypeName eq 'DeviceConfigurationAdmxPolicy')"
+        "(PolicyBaseTypeName eq 'Microsoft.Management.Services.Api.DeviceManagementIntent')"
+    ) -join ' or '
     $policies = @(Get-Report -Action getConfigurationPoliciesReportForDevice `
-        -Filter "(IntuneDeviceId eq $(Quote-FilterValue $id))")
+        -Filter "(($supportedPolicyTypes) and (IntuneDeviceId eq $(Quote-FilterValue $id)))" `
+        -Select @(
+            'IntuneDeviceId', 'PolicyBaseTypeName', 'PolicyId', 'PolicyStatus',
+            'UPN', 'UserId', 'PspdpuLastModifiedTimeUtc', 'PolicyName', 'UnifiedPolicyType'
+        ) -OrderBy @('PolicyName'))
     if ($policies.Count -eq 0) { Add-Issue 'Policy report' 'No policy rows returned; coverage is unverified.' }
 }
 catch { Add-Issue 'Policy report' $_.Exception.Message }
@@ -360,8 +539,10 @@ try {
 }
 catch { Add-Issue 'Legacy configuration states' $_.Exception.Message }
 
+$retrievedAtUtc = [datetime]::UtcNow
 $conflicts = @($settings | Where-Object Classification -eq 'Conflict')
 $policyConflicts = @($policyObservations | Where-Object Classification -eq 'Conflict')
+$conflictReview = @(Get-ConflictReview -Settings $settings.ToArray() -PolicyObservations $policyObservations.ToArray())
 $unclassified = @($settings | Where-Object Classification -eq 'Unclassified')
 if ($unclassified.Count -gt 0) {
     Add-Issue 'Status interpretation' (
@@ -374,29 +555,69 @@ Write-Host "Policy conflict observations: $($policyConflicts.Count)"
 Write-Host "Setting observations: $($settings.Count)"
 Write-Host "Explicit conflict setting observations: $($conflicts.Count)"
 Write-Host "Retrieval/interpretation issues: $($issues.Count)"
-if ($policyConflicts.Count -gt 0) {
-    $policyConflicts | Format-Table PolicyName, PolicyId, State, SettingRows, ConflictSettingRows -Wrap | Out-Host
+if ($conflictReview.Count) {
+    Write-Host "`nCONFLICT REVIEW — policy objects and underlying settings"
+    $conflictReview | Format-List Finding, PolicyName, PolicyId, StateRecordId,
+        SettingName, SettingId, Instance, ReportedValue, ReportedContributingPolicies,
+        UPN, UserId, NextAction | Out-Host
 }
-if ($conflicts.Count -gt 0) {
-    $conflicts | Format-List PolicyName, PolicyId, SettingName, SettingId,
-        Instance, State, UPN, UserId, CurrentValue, ReportedContributors,
-        ErrorCode, ErrorDescription | Out-Host
-}
-else {
+if ($conflicts.Count -eq 0) {
     Write-Warning ('No explicit conflict setting rows returned. This is not proof the device is ' +
         'conflict-free. Check PolicyConflicts, Issues, report visibility, and last sync time.')
 }
 
-[pscustomobject]@{
-    RetrievedAtUtc = [datetime]::UtcNow
+$result = [pscustomobject]@{
+    RetrievedAtUtc = $retrievedAtUtc
     Device = [pscustomobject]$device
     Policies = @($policies | ForEach-Object { [pscustomobject]$_ })
     PolicyObservations = $policyObservations.ToArray()
     PolicyConflicts = $policyConflicts
     Settings = $settings.ToArray()
     Conflicts = $conflicts
+    ConflictReview = $conflictReview
     UnclassifiedSettings = $unclassified
     Issues = $issues.ToArray()
     # False means no detected retrieval/interpretation gap, not guaranteed full coverage.
     HasInvestigationGaps = ($issues.Count -gt 0)
+    ExportPath = $null
 }
+
+if ($ExportPath) {
+    $root = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($ExportPath)
+    New-Item -ItemType Directory -Path $root -Force | Out-Null
+    $safeDeviceName = ([string]$device.deviceName -replace '[^a-zA-Z0-9._-]', '_').Trim('_')
+    if (-not $safeDeviceName) { $safeDeviceName = $id }
+    $runName = '{0}-{1}' -f $safeDeviceName, $retrievedAtUtc.ToString('yyyyMMdd-HHmmssfffZ')
+    $runPath = Join-Path $root $runName
+    New-Item -ItemType Directory -Path $runPath -ErrorAction Stop | Out-Null
+
+    $summary = [pscustomobject]@{
+        RetrievedAtUtc = $retrievedAtUtc
+        DeviceName = $device.deviceName
+        ManagedDeviceId = $id
+        LastIntuneSync = $device.lastSyncDateTime
+        PolicyRecords = $policies.Count
+        PolicyConflictObservations = $policyConflicts.Count
+        SettingObservations = $settings.Count
+        ExplicitConflictSettings = $conflicts.Count
+        UnclassifiedSettings = $unclassified.Count
+        Issues = $issues.Count
+        HasInvestigationGaps = ($issues.Count -gt 0)
+    }
+    Export-DataSet -Data @($summary) -Path (Join-Path $runPath 'Summary.csv')
+    Export-DataSet -Data @([pscustomobject]$device) -Path (Join-Path $runPath 'Device.csv')
+    Export-DataSet -Data @($policies) -Path (Join-Path $runPath 'Policies.csv')
+    Export-DataSet -Data @($policyObservations) -Path (Join-Path $runPath 'PolicyObservations.csv')
+    Export-DataSet -Data @($policyConflicts) -Path (Join-Path $runPath 'PolicyConflicts.csv')
+    Export-DataSet -Data @($settings) -Path (Join-Path $runPath 'Settings.csv')
+    Export-DataSet -Data @($conflicts) -Path (Join-Path $runPath 'Conflicts.csv')
+    Export-DataSet -Data @($conflictReview) -Path (Join-Path $runPath 'ConflictReview.csv')
+    Export-DataSet -Data @($unclassified) -Path (Join-Path $runPath 'UnclassifiedSettings.csv')
+    Export-DataSet -Data @($issues) -Path (Join-Path $runPath 'Issues.csv')
+    $result.ExportPath = $runPath
+    Write-Host "`nExported Excel-compatible CSV files to: $runPath"
+    Get-ChildItem -LiteralPath $runPath -Filter '*.csv' -File |
+        ForEach-Object { Write-Host "  $($_.FullName)" }
+}
+
+$result
