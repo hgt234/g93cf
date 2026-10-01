@@ -1,0 +1,12 @@
+{
+  "schemaVersion": 1,
+  "excludedPropertyNames": [
+    "@odata.context",
+    "@odata.nextLink",
+    "createdDateTime",
+    "lastModifiedDateTime",
+    "modifiedDateTime",
+    "version"
+  ],
+  "sortArrays": true
+}

@@ -1,0 +1,5 @@
+# Pipeline/local scratch data. Tracked snapshots live under state/.
+.intune-staging/
+out/
+*.token
+
