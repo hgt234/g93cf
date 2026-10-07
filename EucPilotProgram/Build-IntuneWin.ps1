@@ -6,12 +6,11 @@ Packages the EUC Early Adopter Join app as an Intune Win32 .intunewin file.
 
 .DESCRIPTION
 Runs the project validation suite first, then invokes Microsoft's
-IntuneWinAppUtil to produce Install-EucPilotJoin.intunewin. The packaged
-setup command is the .cmd wrapper, which selects 64-bit Windows PowerShell
-through Sysnative. That is required because the Intune Management Extension
-is a 32-bit process and a bare powershell.exe command would otherwise run
-32-bit PowerShell and write the detection marker into the WOW6432Node
-registry view.
+IntuneWinAppUtil to produce Install-EucPilotJoin.intunewin. The detection
+marker lives at the HKLM root (HKLM:\EucPilotProgram), which WOW64 shares
+between 32-bit and 64-bit registry views, so plain powershell.exe install
+and uninstall commands are safe even though the Intune Management Extension
+is a 32-bit process.
 
 .EXAMPLE
 Build-IntuneWin.ps1 -IntuneWinAppUtilPath C:\Tools\IntuneWinAppUtil.exe
@@ -29,11 +28,11 @@ param(
 Set-StrictMode -Version 3.0
 $ErrorActionPreference = 'Stop'
 
-$setupFile = 'Install-EucPilotJoin.cmd'
+$setupFile = 'Install-EucPilotJoin.ps1'
 
 & (Join-Path $PSScriptRoot 'Test-EucPilotProgram.ps1') | Out-Null
 
-foreach ($requiredFile in @($setupFile, 'Uninstall-EucPilotJoin.cmd', 'Detect-EucPilotJoin.ps1')) {
+foreach ($requiredFile in @($setupFile, 'Uninstall-EucPilotJoin.ps1', 'Detect-EucPilotJoin.ps1')) {
     $path = Join-Path $PSScriptRoot $requiredFile
     if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
         throw "Package payload is incomplete. Missing: $path"

@@ -42,9 +42,7 @@ Pilot rings / feature updates / app pilots
 |---|---|
 | `Sync-EucPilotGroup.ps1` | Reconciler: app status -> pilot group membership |
 | `Install-EucPilotJoin.ps1` | Win32 wrapper installer (writes the opt-in marker) |
-| `Install-EucPilotJoin.cmd` | 64-bit PowerShell launcher for Intune (install) |
 | `Uninstall-EucPilotJoin.ps1` | Win32 wrapper uninstaller (removes the marker) |
-| `Uninstall-EucPilotJoin.cmd` | 64-bit PowerShell launcher for Intune (uninstall) |
 | `Detect-EucPilotJoin.ps1` | Win32 custom detection script |
 | `Build-IntuneWin.ps1` | Validates, then packages the .intunewin with IntuneWinAppUtil |
 | `Test-EucPilotProgram.ps1` | Offline parser, analyzer, and logic validation |
@@ -119,34 +117,42 @@ the **Microsoft Graph PowerShell** application for the four scopes above.
    - Install behavior: **System**
    - Device restart behavior: **No specific action**
    - 64-bit client: **Yes**
-3. Install command (the .cmd wrapper, not raw PowerShell):
+3. Install command:
 
    ```text
-   cmd.exe /d /c Install-EucPilotJoin.cmd
+   powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\Install-EucPilotJoin.ps1
    ```
 
 4. Uninstall command:
 
    ```text
-   cmd.exe /d /c Uninstall-EucPilotJoin.cmd
+   powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\Uninstall-EucPilotJoin.ps1
    ```
 
 5. Detection rule: **Use a custom detection script**, upload
-   `Detect-EucPilotJoin.ps1`, and run it **as 64-bit**. Do not enforce
-   signature checking unless the scripts are signed.
+   `Detect-EucPilotJoin.ps1`. The "run as 64-bit" toggle is optional (see
+   below), and do not enforce signature checking unless the scripts are
+   signed.
 6. Assignment: **Available for enrolled devices** so users install it from
    the Company Portal. Available apps are user-uninstallable and Intune does
    not automatically reinstall an uninstalled available app, which makes
    uninstall a sticky opt-out.
 
-**Why the .cmd wrappers are mandatory:** the Intune Management Extension is a
-32-bit process. A bare `powershell.exe` install command launches 32-bit
-Windows PowerShell, which redirects `HKLM:\SOFTWARE` writes to the
-WOW6432Node registry view while 64-bit detection reads the real key. The
-wrappers expand `%SystemRoot%` internally and select 64-bit PowerShell via
-Sysnative, which is also required because Intune does not expand environment
-variables in the install and uninstall command fields. This mirrors the
-proven packaging in the IntuneDriveMapper solution.
+**Why the marker lives at the HKLM root:** the Intune Management Extension is
+a 32-bit process, so its `powershell.exe` runs 32-bit Windows PowerShell.
+Under WOW64, `HKLM\SOFTWARE` is redirected - a 32-bit installer writes to
+`SOFTWARE\WOW6432Node` while 64-bit detection reads the real key, so the
+app installs but never detects. The `HKEY_LOCAL_MACHINE` root itself is
+shared between both views, so a marker at `HKLM:\EucPilotProgram` is written
+and read identically at any process bitness. Plain `powershell.exe` commands
+are safe; no Sysnative, .cmd, or .vbs launcher is needed. The installer and
+uninstaller also remove legacy `SOFTWARE`-era markers, including the
+WOW6432Node copies produced by earlier deployments.
+
+For other Win32 packages whose scripts genuinely need a 64-bit process, the
+alternative is an explicit `C:\Windows\Sysnative\WindowsPowerShell\v1.0\powershell.exe`
+command - but that hardcodes the drive letter because Intune does not expand
+environment variables in the command fields.
 
 ## Validation
 

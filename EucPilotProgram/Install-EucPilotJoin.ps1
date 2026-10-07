@@ -7,8 +7,20 @@ param()
 Set-StrictMode -Version 3.0
 $ErrorActionPreference = 'Stop'
 
-$registryPath = 'HKLM:\SOFTWARE\EucPilotProgram'
+$registryPath = 'HKLM:\EucPilotProgram'
 $programVersion = '1.0.0'
+
+# Remove markers written by the original SOFTWARE-based deployment, including
+# the WOW6432Node copy produced when the 32-bit Intune Management Extension
+# ran the installer before the path moved to the WOW64-shared HKLM root.
+foreach ($legacyPath in @(
+    'HKLM:\SOFTWARE\EucPilotProgram',
+    'HKLM:\SOFTWARE\WOW6432Node\EucPilotProgram'
+)) {
+    if (Test-Path -LiteralPath $legacyPath) {
+        Remove-Item -LiteralPath $legacyPath -Recurse -Force
+    }
+}
 
 if (-not (Test-Path -LiteralPath $registryPath)) {
     New-Item -Path $registryPath -Force | Out-Null

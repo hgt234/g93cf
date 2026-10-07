@@ -7,10 +7,16 @@ param()
 Set-StrictMode -Version 3.0
 $ErrorActionPreference = 'Stop'
 
-$registryPath = 'HKLM:\SOFTWARE\EucPilotProgram'
+$registryPath = 'HKLM:\EucPilotProgram'
 
-if (Test-Path -LiteralPath $registryPath) {
-    Remove-Item -LiteralPath $registryPath -Recurse -Force
+foreach ($pathToRemove in @(
+    $registryPath,
+    'HKLM:\SOFTWARE\EucPilotProgram',
+    'HKLM:\SOFTWARE\WOW6432Node\EucPilotProgram'
+)) {
+    if (Test-Path -LiteralPath $pathToRemove) {
+        Remove-Item -LiteralPath $pathToRemove -Recurse -Force
+    }
 }
 
 Write-Output 'EUC Early Adopter opt-in marker removed.'

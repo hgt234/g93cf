@@ -210,11 +210,20 @@ $detectionContent = Get-Content -LiteralPath (Join-Path $PSScriptRoot 'Detect-Eu
 Assert-True ($detectionContent -match "'Joined'") 'detection expects the Joined marker value'
 Assert-True ($detectionContent -match 'exit 1') 'detection exits nonzero on absence'
 
-# 5g. Install/uninstall/detection registry paths agree.
+# 5g. Install/uninstall/detection registry paths agree on the WOW64-shared
+# HKLM root. HKLM\SOFTWARE is redirected between 32-bit and 64-bit views,
+# which is the failure this layout exists to prevent.
 $installContent = Get-Content -LiteralPath (Join-Path $PSScriptRoot 'Install-EucPilotJoin.ps1') -Raw
 $uninstallContent = Get-Content -LiteralPath (Join-Path $PSScriptRoot 'Uninstall-EucPilotJoin.ps1') -Raw
 foreach ($script in @(@{ n = 'install'; c = $installContent }, @{ n = 'uninstall'; c = $uninstallContent }, @{ n = 'detection'; c = $detectionContent })) {
-    Assert-True ($script.c -cmatch 'HKLM:\\SOFTWARE\\EucPilotProgram') ('{0} script uses the shared registry path' -f $script.n)
+    Assert-True ($script.c -cmatch 'HKLM:\\EucPilotProgram') ('{0} script uses the HKLM-root marker path' -f $script.n)
+    Assert-True ($script.c -cnotmatch 'HKLM:\\SOFTWARE\\EucPilotProgram''?\s*$') ('{0} script must not rely on the redirected SOFTWARE path' -f $script.n)
+}
+
+# 5g-2. Install and uninstall both clean up the legacy SOFTWARE-era markers
+# (the WOW6432Node copy is the artifact of the 32-bit IME failure mode).
+foreach ($script in @(@{ n = 'install'; c = $installContent }, @{ n = 'uninstall'; c = $uninstallContent })) {
+    Assert-True ($script.c -cmatch 'WOW6432Node\\EucPilotProgram') ('{0} script removes the legacy WOW6432Node marker' -f $script.n)
 }
 
 # 5h. Reconciler must reference both branches of auth and both transports.

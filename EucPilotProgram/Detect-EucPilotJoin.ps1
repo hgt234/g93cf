@@ -4,7 +4,7 @@
 param()
 
 try {
-    $status = [string](Get-ItemPropertyValue -Path 'HKLM:\SOFTWARE\EucPilotProgram' -Name Status -ErrorAction Stop)
+    $status = [string](Get-ItemPropertyValue -Path 'HKLM:\EucPilotProgram' -Name Status -ErrorAction Stop)
     if ($status -ne 'Joined') { exit 1 }
     Write-Output 'EUC Early Adopter opt-in marker present.'
     exit 0
