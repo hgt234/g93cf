@@ -5,14 +5,19 @@
 Packages the EUC Early Adopter Join app as an Intune Win32 .intunewin file.
 
 .DESCRIPTION
-Runs the project validation suite first, then invokes Microsoft's
-IntuneWinAppUtil to produce Install-EucPilotJoin.intunewin. The marker is
-written under HKLM\SOFTWARE and WOW64 redirects it to WOW6432Node because
-the Intune Management Extension runs the install as a 32-bit process; the
-detection script reads that redirected node.
+Runs the project validation suite when Test-EucPilotProgram.ps1 is present
+beside this script, then invokes Microsoft's IntuneWinAppUtil to produce
+Install-EucPilotJoin.intunewin. The marker is written under HKLM\SOFTWARE and
+WOW64 redirects it to WOW6432Node because the Intune Management Extension runs
+the install as a 32-bit process; the detection script reads that redirected
+node.
 
 .EXAMPLE
 Build-IntuneWin.ps1 -IntuneWinAppUtilPath C:\Tools\IntuneWinAppUtil.exe
+
+.EXAMPLE
+# Package without running the optional validation suite.
+Build-IntuneWin.ps1 -IntuneWinAppUtilPath C:\Tools\IntuneWinAppUtil.exe -SkipValidation
 #>
 
 [CmdletBinding()]
@@ -21,20 +26,37 @@ param(
     [ValidateScript({ Test-Path -LiteralPath $_ -PathType Leaf })]
     [string] $IntuneWinAppUtilPath,
 
-    [string] $OutputPath = (Join-Path (Split-Path $PSScriptRoot -Parent) 'EucPilotProgramOutput')
+    [string] $OutputPath = (Join-Path (Split-Path $PSScriptRoot -Parent) 'EucPilotProgramOutput'),
+
+    [switch] $SkipValidation
 )
 
 Set-StrictMode -Version 3.0
 $ErrorActionPreference = 'Stop'
 
 $setupFile = 'Install-EucPilotJoin.ps1'
+$payloadFiles = @(
+    $setupFile
+    'Uninstall-EucPilotJoin.ps1'
+    'Detect-EucPilotJoin.ps1'
+)
 
-& (Join-Path $PSScriptRoot 'Test-EucPilotProgram.ps1') | Out-Null
-
-foreach ($requiredFile in @($setupFile, 'Uninstall-EucPilotJoin.ps1', 'Detect-EucPilotJoin.ps1')) {
+foreach ($requiredFile in $payloadFiles) {
     $path = Join-Path $PSScriptRoot $requiredFile
     if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
         throw "Package payload is incomplete. Missing: $path"
+    }
+}
+
+if (-not $SkipValidation) {
+    $validationScript = Join-Path $PSScriptRoot 'Test-EucPilotProgram.ps1'
+    if (Test-Path -LiteralPath $validationScript -PathType Leaf) {
+        # -SkipScriptAnalyzer keeps packaging hosts that do not have
+        # PSScriptAnalyzer installed from failing the build.
+        & $validationScript -SkipScriptAnalyzer | Out-Null
+    }
+    else {
+        Write-Warning ("Validation script not found at {0}. Packaging without validation; run from the EucPilotProgram folder or pass -SkipValidation to silence this warning." -f $validationScript)
     }
 }
 
