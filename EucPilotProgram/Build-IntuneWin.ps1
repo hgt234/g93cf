@@ -6,11 +6,10 @@ Packages the EUC Early Adopter Join app as an Intune Win32 .intunewin file.
 
 .DESCRIPTION
 Runs the project validation suite first, then invokes Microsoft's
-IntuneWinAppUtil to produce Install-EucPilotJoin.intunewin. The detection
-marker lives at the HKLM root (HKLM:\EucPilotProgram), which WOW64 shares
-between 32-bit and 64-bit registry views, so plain powershell.exe install
-and uninstall commands are safe even though the Intune Management Extension
-is a 32-bit process.
+IntuneWinAppUtil to produce Install-EucPilotJoin.intunewin. The marker is
+written under HKLM\SOFTWARE and WOW64 redirects it to WOW6432Node because
+the Intune Management Extension runs the install as a 32-bit process; the
+detection script reads that redirected node.
 
 .EXAMPLE
 Build-IntuneWin.ps1 -IntuneWinAppUtilPath C:\Tools\IntuneWinAppUtil.exe

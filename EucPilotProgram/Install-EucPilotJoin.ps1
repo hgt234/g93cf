@@ -7,21 +7,13 @@ param()
 Set-StrictMode -Version 3.0
 $ErrorActionPreference = 'Stop'
 
-# The opt-in marker lives in its own key at the root of the HKLM hive so it
-# is shared between the 32-bit and 64-bit registry views.
-$markerKeyPath = 'HKLM:\EucPilotProgram'
+# The marker is written under SOFTWARE because writing to the root of HKLM is
+# not permitted in this environment. The Intune Management Extension runs the
+# install as a 32-bit process, so WOW64 redirects this key to
+# HKLM:\SOFTWARE\WOW6432Node\EucPilotProgram - which is where the detection
+# script reads it.
+$markerKeyPath = 'HKLM:\SOFTWARE\EucPilotProgram'
 $programVersion = '1.0.0'
-
-# Remove markers left by the earlier SOFTWARE-based deployment, including the
-# WOW6432Node copy the 32-bit Intune agent wrote there.
-foreach ($legacyKeyPath in @(
-    'HKLM:\SOFTWARE\EucPilotProgram',
-    'HKLM:\SOFTWARE\WOW6432Node\EucPilotProgram'
-)) {
-    if (Test-Path -LiteralPath $legacyKeyPath) {
-        Remove-Item -LiteralPath $legacyKeyPath -Recurse -Force
-    }
-}
 
 if (-not (Test-Path -LiteralPath $markerKeyPath)) {
     New-Item -Path $markerKeyPath | Out-Null

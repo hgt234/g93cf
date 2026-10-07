@@ -7,15 +7,14 @@ param()
 Set-StrictMode -Version 3.0
 $ErrorActionPreference = 'Stop'
 
-$markerKeyPath = 'HKLM:\EucPilotProgram'
-
-foreach ($keyPath in @(
-    $markerKeyPath,
+# Remove the marker from both physical locations: the native SOFTWARE key and
+# the WOW6432Node key the 32-bit Intune agent writes to.
+foreach ($markerKeyPath in @(
     'HKLM:\SOFTWARE\EucPilotProgram',
     'HKLM:\SOFTWARE\WOW6432Node\EucPilotProgram'
 )) {
-    if (Test-Path -LiteralPath $keyPath) {
-        Remove-Item -LiteralPath $keyPath -Recurse -Force
+    if (Test-Path -LiteralPath $markerKeyPath) {
+        Remove-Item -LiteralPath $markerKeyPath -Recurse -Force
     }
 }
 

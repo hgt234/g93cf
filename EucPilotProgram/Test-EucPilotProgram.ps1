@@ -210,22 +210,22 @@ $detectionContent = Get-Content -LiteralPath (Join-Path $PSScriptRoot 'Detect-Eu
 Assert-True ($detectionContent -match "'Joined'") 'detection expects the Joined marker value'
 Assert-True ($detectionContent -match 'exit 1') 'detection exits nonzero on absence'
 
-# 5g. Install/uninstall/detection all use the readable PowerShell registry
-# provider against the HKLM-root marker key. The key sits in its own hive
-# branch so it is shared between 32-bit and 64-bit registry views.
+# 5g. The marker is written under SOFTWARE with the readable registry
+# cmdlets. The Intune agent runs 32-bit, so WOW64 stores it under
+# WOW6432Node, and the detection script reads that node.
 $installContent = Get-Content -LiteralPath (Join-Path $PSScriptRoot 'Install-EucPilotJoin.ps1') -Raw
 $uninstallContent = Get-Content -LiteralPath (Join-Path $PSScriptRoot 'Uninstall-EucPilotJoin.ps1') -Raw
-foreach ($script in @(@{ n = 'install'; c = $installContent }, @{ n = 'uninstall'; c = $uninstallContent }, @{ n = 'detection'; c = $detectionContent })) {
-    Assert-True ($script.c -cmatch 'HKLM:\\EucPilotProgram') ('{0} script uses the HKLM-root marker path' -f $script.n)
-}
+Assert-True ($installContent -cmatch 'HKLM:\\SOFTWARE\\EucPilotProgram') 'install writes the marker under SOFTWARE'
 Assert-True ($installContent -cmatch 'New-ItemProperty[\s\S]*-Name Status[\s\S]*-Value ''Joined''') 'install writes the Joined marker with New-ItemProperty'
-Assert-True ($detectionContent -cmatch "Get-ItemPropertyValue[\s\S]*'HKLM:\\EucPilotProgram'[\s\S]*-Name Status") 'detection reads the marker with Get-ItemPropertyValue'
-Assert-True ($installContent -cnotmatch 'Microsoft\.Win32\.Registry') 'install stays on readable PowerShell registry cmdlets'
-
-# 5g-2. Install and uninstall clean up the legacy SOFTWARE-era markers,
-# including the WOW6432Node copy the 32-bit Intune agent produced.
-foreach ($script in @(@{ n = 'install'; c = $installContent }, @{ n = 'uninstall'; c = $uninstallContent })) {
-    Assert-True ($script.c -cmatch 'WOW6432Node\\EucPilotProgram') ('{0} script removes the legacy WOW6432Node marker' -f $script.n)
+Assert-True ($uninstallContent -cmatch 'HKLM:\\SOFTWARE\\EucPilotProgram') 'uninstall removes the native SOFTWARE marker'
+Assert-True ($uninstallContent -cmatch 'HKLM:\\SOFTWARE\\WOW6432Node\\EucPilotProgram') 'uninstall removes the redirected WOW6432Node marker'
+Assert-True ($detectionContent -cmatch 'HKLM:\\SOFTWARE\\WOW6432Node\\EucPilotProgram') 'detection reads the redirected WOW6432Node marker'
+Assert-True ($detectionContent -cmatch 'Get-ItemPropertyValue') 'detection reads the marker with Get-ItemPropertyValue'
+Assert-True ($detectionContent -cmatch '-Name Status') 'detection checks the Status value'
+Assert-True ($detectionContent -cmatch 'HKLM:\\SOFTWARE\\EucPilotProgram') 'detection keeps a native SOFTWARE fallback for 32-bit detection'
+foreach ($script in @(@{ n = 'install'; c = $installContent }, @{ n = 'uninstall'; c = $uninstallContent }, @{ n = 'detection'; c = $detectionContent })) {
+    Assert-True ($script.c -cnotmatch 'HKLM:\\EucPilotProgram''') ('{0} script must not target the forbidden HKLM root' -f $script.n)
+    Assert-True ($script.c -cnotmatch 'Microsoft\.Win32\.Registry') ('{0} script stays on readable PowerShell registry cmdlets' -f $script.n)
 }
 
 # 5h. Reconciler must reference both branches of auth and both transports.

@@ -130,24 +130,24 @@ the **Microsoft Graph PowerShell** application for the four scopes above.
    ```
 
 5. Detection rule: **Use a custom detection script**, upload
-   `Detect-EucPilotJoin.ps1`. The "run as 64-bit" toggle is optional (see
-   below), and do not enforce signature checking unless the scripts are
-   signed.
+   `Detect-EucPilotJoin.ps1`. It reads both the redirected and native marker
+   keys, so the "run as 64-bit" toggle can be left at its default. Do not
+   enforce signature checking unless the scripts are signed.
 6. Assignment: **Available for enrolled devices** so users install it from
    the Company Portal. Available apps are user-uninstallable and Intune does
    not automatically reinstall an uninstalled available app, which makes
    uninstall a sticky opt-out.
 
-**Why the marker lives at the HKLM root:** `HKLM:\SOFTWARE` is redirected
-under WOW64. The Intune Management Extension runs as a 32-bit process, so a
-marker written under `SOFTWARE` lands in `SOFTWARE\WOW6432Node` while 64-bit
-detection reads the real key, and the app installs but never detects. The
-`HKLM:\EucPilotProgram` key sits outside that redirected branch, so it has a
-single physical copy for both views, and the plain PowerShell registry
-cmdlets in these scripts read and write it identically at any process
-bitness. No Sysnative, .cmd, or .vbs launcher is needed. The installer and
-uninstaller also remove legacy `SOFTWARE`-era markers, including the
-WOW6432Node copies produced by earlier deployments.
+**Why detection reads WOW6432Node:** writing to the root of HKLM is not
+permitted in this environment, so the marker lives under `HKLM\SOFTWARE`.
+The Intune Management Extension runs the install from a 32-bit process, and
+WOW64 redirects `HKLM\SOFTWARE` writes to `HKLM\SOFTWARE\WOW6432Node`, so
+the marker physically lands at
+`HKLM\SOFTWARE\WOW6432Node\EucPilotProgram`. The detection script reads that
+redirected node, and falls back to the native `SOFTWARE` key so it works
+whether Intune runs detection as a 32-bit or 64-bit process. Uninstall
+removes both physical copies. All scripts use plain PowerShell registry
+cmdlets - no Sysnative, .cmd, .vbs, or .NET code.
 
 ## Validation
 
