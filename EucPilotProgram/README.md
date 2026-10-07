@@ -42,8 +42,11 @@ Pilot rings / feature updates / app pilots
 |---|---|
 | `Sync-EucPilotGroup.ps1` | Reconciler: app status -> pilot group membership |
 | `Install-EucPilotJoin.ps1` | Win32 wrapper installer (writes the opt-in marker) |
+| `Install-EucPilotJoin.cmd` | 64-bit PowerShell launcher for Intune (install) |
 | `Uninstall-EucPilotJoin.ps1` | Win32 wrapper uninstaller (removes the marker) |
+| `Uninstall-EucPilotJoin.cmd` | 64-bit PowerShell launcher for Intune (uninstall) |
 | `Detect-EucPilotJoin.ps1` | Win32 custom detection script |
+| `Build-IntuneWin.ps1` | Validates, then packages the .intunewin with IntuneWinAppUtil |
 | `Test-EucPilotProgram.ps1` | Offline parser, analyzer, and logic validation |
 | `PSScriptAnalyzerSettings.psd1` | Windows PowerShell 5.1 compatibility rules |
 
@@ -105,15 +108,45 @@ the **Microsoft Graph PowerShell** application for the four scopes above.
 
 ## Intune app packaging
 
-1. Package the wrapper with Microsoft's IntuneWinAppUtil:
-   `IntuneWinAppUtil.exe -c . -s Install-EucPilotJoin.ps1 -o . -q`
-2. Install command: `powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\Install-EucPilotJoin.ps1`
-3. Uninstall command: `powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\Uninstall-EucPilotJoin.ps1`
-4. Detection: use `Detect-EucPilotJoin.ps1` as a custom detection script.
-5. Assignment: **Available for enrolled devices** so users install it from
+1. Obtain Microsoft's IntuneWinAppUtil, then build the package. Validation
+   runs automatically before packaging:
+
+   ```powershell
+   .\Build-IntuneWin.ps1 -IntuneWinAppUtilPath C:\Tools\IntuneWinAppUtil.exe
+   ```
+
+2. Create a Windows app (Win32) in Intune with these values:
+   - Install behavior: **System**
+   - Device restart behavior: **No specific action**
+   - 64-bit client: **Yes**
+3. Install command (the .cmd wrapper, not raw PowerShell):
+
+   ```text
+   cmd.exe /d /c Install-EucPilotJoin.cmd
+   ```
+
+4. Uninstall command:
+
+   ```text
+   cmd.exe /d /c Uninstall-EucPilotJoin.cmd
+   ```
+
+5. Detection rule: **Use a custom detection script**, upload
+   `Detect-EucPilotJoin.ps1`, and run it **as 64-bit**. Do not enforce
+   signature checking unless the scripts are signed.
+6. Assignment: **Available for enrolled devices** so users install it from
    the Company Portal. Available apps are user-uninstallable and Intune does
    not automatically reinstall an uninstalled available app, which makes
    uninstall a sticky opt-out.
+
+**Why the .cmd wrappers are mandatory:** the Intune Management Extension is a
+32-bit process. A bare `powershell.exe` install command launches 32-bit
+Windows PowerShell, which redirects `HKLM:\SOFTWARE` writes to the
+WOW6432Node registry view while 64-bit detection reads the real key. The
+wrappers expand `%SystemRoot%` internally and select 64-bit PowerShell via
+Sysnative, which is also required because Intune does not expand environment
+variables in the install and uninstall command fields. This mirrors the
+proven packaging in the IntuneDriveMapper solution.
 
 ## Validation
 
