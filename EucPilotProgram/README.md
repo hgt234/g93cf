@@ -106,12 +106,15 @@ the **Microsoft Graph PowerShell** application for the four scopes above.
 
 ## Intune app packaging
 
-1. Obtain Microsoft's IntuneWinAppUtil, then build the package. Validation
-   runs automatically before packaging:
+1. Obtain Microsoft's IntuneWinAppUtil, then build the package:
 
    ```powershell
    .\Build-IntuneWin.ps1 -IntuneWinAppUtilPath C:\Tools\IntuneWinAppUtil.exe
    ```
+
+   The `.intunewin` is written to the `EucPilotProgramOutput` folder beside
+   this one. Run `.\Test-EucPilotProgram.ps1` separately if you want the
+   offline validation checks.
 
 2. Create a Windows app (Win32) in Intune with these values:
    - Install behavior: **System**
