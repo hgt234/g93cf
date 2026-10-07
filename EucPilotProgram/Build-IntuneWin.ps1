@@ -53,7 +53,17 @@ if (-not $SkipValidation) {
     if (Test-Path -LiteralPath $validationScript -PathType Leaf) {
         # -SkipScriptAnalyzer keeps packaging hosts that do not have
         # PSScriptAnalyzer installed from failing the build.
-        & $validationScript -SkipScriptAnalyzer | Out-Null
+        try {
+            & $validationScript -SkipScriptAnalyzer | Out-Null
+        }
+        catch {
+            $guidance = @(
+                ('Validation failed: {0}' -f $_.Exception.Message)
+                'The install, detection, and validation scripts may be from different revisions.'
+                'Update the whole EucPilotProgram folder (git pull) so they match, or rerun this build with -SkipValidation to package the current payload anyway.'
+            ) -join [Environment]::NewLine
+            throw $guidance
+        }
     }
     else {
         Write-Warning ("Validation script not found at {0}. Packaging without validation; run from the EucPilotProgram folder or pass -SkipValidation to silence this warning." -f $validationScript)
