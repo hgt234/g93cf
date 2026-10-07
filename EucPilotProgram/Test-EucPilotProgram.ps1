@@ -210,20 +210,37 @@ $detectionContent = Get-Content -LiteralPath (Join-Path $PSScriptRoot 'Detect-Eu
 Assert-True ($detectionContent -match "'Joined'") 'detection expects the Joined marker value'
 Assert-True ($detectionContent -match 'exit 1') 'detection exits nonzero on absence'
 
-# 5g. Install/uninstall/detection registry paths agree on the WOW64-shared
-# HKLM root. HKLM\SOFTWARE is redirected between 32-bit and 64-bit views,
-# which is the failure this layout exists to prevent.
+# 5g. Install/uninstall/detection all target the WOW64-shared HKLM root
+# through the .NET Registry API. The Windows PowerShell 5.1 registry
+# provider cannot create keys directly at the HKLM drive root ("The
+# parameter is incorrect"), and HKLM\SOFTWARE is redirected between 32-bit
+# and 64-bit views - two failure modes this contract exists to prevent.
 $installContent = Get-Content -LiteralPath (Join-Path $PSScriptRoot 'Install-EucPilotJoin.ps1') -Raw
 $uninstallContent = Get-Content -LiteralPath (Join-Path $PSScriptRoot 'Uninstall-EucPilotJoin.ps1') -Raw
-foreach ($script in @(@{ n = 'install'; c = $installContent }, @{ n = 'uninstall'; c = $uninstallContent }, @{ n = 'detection'; c = $detectionContent })) {
-    Assert-True ($script.c -cmatch 'HKLM:\\EucPilotProgram') ('{0} script uses the HKLM-root marker path' -f $script.n)
-    Assert-True ($script.c -cnotmatch 'HKLM:\\SOFTWARE\\EucPilotProgram''?\s*$') ('{0} script must not rely on the redirected SOFTWARE path' -f $script.n)
+foreach ($script in @(
+    @{ n = 'install';    c = $installContent;    m = 'CreateSubKey' }
+    @{ n = 'uninstall';  c = $uninstallContent;  m = 'DeleteSubKeyTree' }
+    @{ n = 'detection';  c = $detectionContent;  m = 'OpenSubKey' }
+)) {
+    Assert-True ($script.c -cmatch 'EucPilotProgram') ('{0} script targets the EucPilotProgram marker key' -f $script.n)
+    Assert-True ($script.c -cmatch [regex]::Escape($script.m)) ('{0} script uses the .NET Registry API ({1})' -f $script.n, $script.m)
+    Assert-True ($script.c -cnotmatch 'HKLM:\\SOFTWARE\\EucPilotProgram') ('{0} script must not rely on the redirected SOFTWARE path' -f $script.n)
 }
 
-# 5g-2. Install and uninstall both clean up the legacy SOFTWARE-era markers
-# (the WOW6432Node copy is the artifact of the 32-bit IME failure mode).
+# 5g-2. Root-level keys need the .NET Registry API - the provider's
+# New-Item at the HKLM drive root is the reported failure. Guard against
+# any provider-based write creeping back in.
+foreach ($script in @(@{ n = 'install'; c = $installContent }, @{ n = 'uninstall'; c = $uninstallContent }, @{ n = 'detection'; c = $detectionContent })) {
+    Assert-True ($script.c -cnotmatch 'New-Item\s+-Path') ('{0} script must not use the registry provider to write the marker' -f $script.n)
+    Assert-True ($script.c -cnotmatch 'Get-ItemPropertyValue|Remove-Item\s+-LiteralPath') ('{0} script must not use provider cmdlets on the marker' -f $script.n)
+}
+
+# 5g-3. Install and uninstall both clean up the legacy SOFTWARE-era markers
+# (the WOW6432Node copy is the artifact of the 32-bit IME failure mode) via
+# the explicit 64-bit view so cleanup works from any process bitness.
 foreach ($script in @(@{ n = 'install'; c = $installContent }, @{ n = 'uninstall'; c = $uninstallContent })) {
     Assert-True ($script.c -cmatch 'WOW6432Node\\EucPilotProgram') ('{0} script removes the legacy WOW6432Node marker' -f $script.n)
+    Assert-True ($script.c -cmatch 'RegistryView\]::Registry64') ('{0} script pins the 64-bit registry view for cleanup' -f $script.n)
 }
 
 # 5h. Reconciler must reference both branches of auth and both transports.

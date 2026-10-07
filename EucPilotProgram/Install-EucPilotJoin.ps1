@@ -7,27 +7,35 @@ param()
 Set-StrictMode -Version 3.0
 $ErrorActionPreference = 'Stop'
 
-$registryPath = 'HKLM:\EucPilotProgram'
+$markerSubKey = 'EucPilotProgram'
 $programVersion = '1.0.0'
+
+# The Windows PowerShell 5.1 registry provider cannot create a key directly
+# at the HKLM drive root (the provider call fails with "The parameter is
+# incorrect"), and the Intune Management Extension runs 5.1, so the .NET
+# Registry API is used instead. The 64-bit view is opened explicitly so the
+# legacy cleanup reaches the physical keys regardless of process bitness;
+# the HKLM root itself is shared between registry views.
+$registry = [Microsoft.Win32.RegistryKey]::OpenBaseKey(
+    [Microsoft.Win32.RegistryHive]::LocalMachine,
+    [Microsoft.Win32.RegistryView]::Registry64
+)
 
 # Remove markers written by the original SOFTWARE-based deployment, including
 # the WOW6432Node copy produced when the 32-bit Intune Management Extension
 # ran the installer before the path moved to the WOW64-shared HKLM root.
-foreach ($legacyPath in @(
-    'HKLM:\SOFTWARE\EucPilotProgram',
-    'HKLM:\SOFTWARE\WOW6432Node\EucPilotProgram'
+foreach ($legacySubKey in @(
+    'SOFTWARE\EucPilotProgram',
+    'SOFTWARE\WOW6432Node\EucPilotProgram'
 )) {
-    if (Test-Path -LiteralPath $legacyPath) {
-        Remove-Item -LiteralPath $legacyPath -Recurse -Force
-    }
+    $registry.DeleteSubKeyTree($legacySubKey, $false)
 }
 
-if (-not (Test-Path -LiteralPath $registryPath)) {
-    New-Item -Path $registryPath -Force | Out-Null
-}
+$marker = $registry.CreateSubKey($markerSubKey)
+$marker.SetValue('Status', 'Joined', [Microsoft.Win32.RegistryValueKind]::String)
+$marker.SetValue('Version', $programVersion, [Microsoft.Win32.RegistryValueKind]::String)
+$marker.SetValue('JoinedUtc', [DateTime]::UtcNow.ToString('o'), [Microsoft.Win32.RegistryValueKind]::String)
+$marker.Close()
+$registry.Dispose()
 
-New-ItemProperty -Path $registryPath -Name Status -Value 'Joined' -PropertyType String -Force | Out-Null
-New-ItemProperty -Path $registryPath -Name Version -Value $programVersion -PropertyType String -Force | Out-Null
-New-ItemProperty -Path $registryPath -Name JoinedUtc -Value ([DateTime]::UtcNow.ToString('o')) -PropertyType String -Force | Out-Null
-
-Write-Output "EUC Early Adopter opt-in marker written to $registryPath."
+Write-Output ("EUC Early Adopter opt-in marker written to HKLM:\{0}." -f $markerSubKey)
