@@ -138,21 +138,16 @@ the **Microsoft Graph PowerShell** application for the four scopes above.
    not automatically reinstall an uninstalled available app, which makes
    uninstall a sticky opt-out.
 
-**Why the marker lives at the HKLM root:** the Intune Management Extension is
-a 32-bit process, so its `powershell.exe` runs 32-bit Windows PowerShell.
-Under WOW64, `HKLM\SOFTWARE` is redirected - a 32-bit installer writes to
-`SOFTWARE\WOW6432Node` while 64-bit detection reads the real key, so the
-app installs but never detects. The `HKEY_LOCAL_MACHINE` root itself is
-shared between both views, so a marker at `HKLM:\EucPilotProgram` is written
-and read identically at any process bitness. Plain `powershell.exe` commands
-are safe; no Sysnative, .cmd, or .vbs launcher is needed. The installer and
+**Why the marker lives at the HKLM root:** `HKLM:\SOFTWARE` is redirected
+under WOW64. The Intune Management Extension runs as a 32-bit process, so a
+marker written under `SOFTWARE` lands in `SOFTWARE\WOW6432Node` while 64-bit
+detection reads the real key, and the app installs but never detects. The
+`HKLM:\EucPilotProgram` key sits outside that redirected branch, so it has a
+single physical copy for both views, and the plain PowerShell registry
+cmdlets in these scripts read and write it identically at any process
+bitness. No Sysnative, .cmd, or .vbs launcher is needed. The installer and
 uninstaller also remove legacy `SOFTWARE`-era markers, including the
 WOW6432Node copies produced by earlier deployments.
-
-For other Win32 packages whose scripts genuinely need a 64-bit process, the
-alternative is an explicit `C:\Windows\Sysnative\WindowsPowerShell\v1.0\powershell.exe`
-command - but that hardcodes the drive letter because Intune does not expand
-environment variables in the command fields.
 
 ## Validation
 
