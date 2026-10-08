@@ -99,6 +99,45 @@ function Get-PilotProperty {
     return $null
 }
 
+function Select-PilotAuthModule {
+    # Microsoft.Graph.Authentication 2.41.0/2.41.1 fail to load their bundled
+    # System.Text.Json 10; Connect-MgGraph then dies with "Could not load file
+    # or assembly 'System.Text.Json, Version=10.0.0.0'"
+    # (microsoftgraph/msgraph-sdk-powershell#3810). Prefer the newest version
+    # outside that broken range so a side-by-side 2.40.0 keeps working.
+    $brokenMin = [version] '2.41.0'
+    $brokenMax = [version] '2.41.1'
+
+    $installed = @(Get-Module -ListAvailable -Name Microsoft.Graph.Authentication)
+    if ($installed.Count -eq 0) {
+        throw 'Microsoft.Graph.Authentication is required for interactive sign-in. Run: Install-Module Microsoft.Graph.Authentication -Scope CurrentUser'
+    }
+
+    $usable = New-Object 'System.Collections.Generic.List[object]'
+    $broken = New-Object 'System.Collections.Generic.List[string]'
+    foreach ($candidate in $installed) {
+        $version = [version] $candidate.Version
+        if ($version -ge $brokenMin -and $version -le $brokenMax) {
+            $broken.Add($candidate.Version.ToString())
+        }
+        else {
+            $usable.Add($candidate)
+        }
+    }
+
+    $usable = @($usable | Sort-Object Version -Descending)
+    if ($usable.Count -gt 0) {
+        if ($broken.Count -gt 0) {
+            Write-Warning ('Ignoring Microsoft.Graph.Authentication {0}: known System.Text.Json load bug (#3810). Using {1}.' -f
+                ($broken -join ', '), $usable[0].Version)
+        }
+        return $usable[0]
+    }
+
+    throw ('Microsoft.Graph.Authentication {0} cannot sign in: it fails to load its bundled System.Text.Json 10 (microsoftgraph/msgraph-sdk-powershell#3810). Install a fixed release, e.g. {1}' -f
+        ($broken -join ', '), 'Install-Module Microsoft.Graph.Authentication -RequiredVersion 2.40.0 -Scope CurrentUser -Force')
+}
+
 function Connect-PilotGraph {
     param([string] $TenantId, [string[]] $Scopes)
 
@@ -114,12 +153,7 @@ function Connect-PilotGraph {
         return [pscustomobject]@{ Mode = 'ManagedIdentity'; Token = [string]$accessToken; Account = 'managed identity' }
     }
 
-    $module = Get-Module -ListAvailable -Name Microsoft.Graph.Authentication |
-        Sort-Object Version -Descending |
-        Select-Object -First 1
-    if ($null -eq $module) {
-        throw 'Microsoft.Graph.Authentication is required for interactive sign-in. Run: Install-Module Microsoft.Graph.Authentication -Scope CurrentUser'
-    }
+    $module = Select-PilotAuthModule
     Import-Module $module.Path -Force
 
     $connectArgs = @{ Scopes = $Scopes; NoWelcome = $true }

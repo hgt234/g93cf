@@ -94,6 +94,12 @@ the Automation account accordingly.
    refuses to run against any other group type.
 3. Install the SDK once:
    `Install-Module Microsoft.Graph.Authentication -Scope CurrentUser`.
+   Avoid **2.41.0 and 2.41.1**: they fail `Connect-MgGraph` with
+   `Could not load file or assembly 'System.Text.Json, Version=10.0.0.0'`
+   (microsoftgraph/msgraph-sdk-powershell#3810, fixed after 2.41.1). The
+   script skips those versions and uses any other installed one; if 2.41.x is
+   all you have, install a known-good release alongside it:
+   `Install-Module Microsoft.Graph.Authentication -RequiredVersion 2.40.0 -Scope CurrentUser -Force`.
 4. Dry run:
    `.\Sync-EucPilotGroup.ps1 -JoinAppId <id> -PilotGroupId <gid> -WhatIf`
    Sign in at the interactive prompt (MFA applies), review the planned diff.
