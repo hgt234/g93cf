@@ -1,53 +1,37 @@
 # EUC Early Adopter Pilot Program
 
-Self-service opt-in/opt-out for an Intune-managed, Entra-joined Windows pilot
-ring. The user's action in the Company Portal is the signal; a reconciler
-keeps an Entra device group in sync with that signal. No Forms, no Flow, no
-premium licensing, no secrets.
+Users join or leave the pilot by installing or uninstalling the Join app in
+Company Portal. The sync script updates an Entra device group using the app's
+Intune installation status. Devices must be Intune-managed and Entra-joined.
 
 ## How it works
 
 ```
-JOIN:   Company Portal -> Install "EUC Early Adopter - Join"
-LEAVE:  Company Portal -> Uninstall the app
-          |
-          v
-Intune app install status per device ("installed")
-          |
-          v
-Sync-EucPilotGroup.ps1 (POC: interactive | PROD: Azure Automation managed identity)
-  1. POST Intune install status report -> desired state
-  2. GET pilot group members           -> current state
-  3. guards -> remove opted-out devices -> add new devices within the cap
-  4. comms-group sync, audit summary
-          |
-          v
-Pilot rings / feature updates / app pilots
-(production rings must exclude the pilot group)
+Company Portal: install or uninstall the Join app
+    -> Intune app installation status
+    -> Sync-EucPilotGroup.ps1 (Local or Azure Automation)
+    -> Entra pilot device group and optional comms group
+    -> Pilot updates and apps
 ```
 
-- **State-based, not event-based.** Like a Configuration Manager collection
-  query, every run converges to "installed = in group." Missed runs, drift,
-  and resubmissions self-heal.
-- **The device is the context.** Installing the app on a device opts that
-  device in. Multi-device users install on each device they want piloted.
-- **Only explicit opt-out removes.** `installed` adds; `notInstalled`,
-  `notApplicable`, or a device gone from the report/Intune removes.
-  Transient states (`pendingInstall`, `failed`, `uninstallFailed`,
-  `unknown`) hold the device where it is.
-- **Error is never empty.** Any Graph failure halts the run. A report with
-  zero rows, a partial report, or more than `-MaxRemovals` planned removals
-  aborts before any write.
-- **Idempotent.** "Already a member" (HTTP 400 with that specific error) and
-  "not a member" (HTTP 404) are absorbed, so re-runs are always safe. Any
-  other 400 halts the run.
-- **Throttle-aware.** HTTP 429/503/504 are retried, honoring `Retry-After`.
+Each run adds devices reporting `installed` and removes devices reporting
+`notInstalled`, `notApplicable`, or no longer present in the report or Intune.
+Pending, failed, uninstall-failed, and unknown states leave membership as it is.
+Users install the app on each device they want to include.
+
+The optional comms group contains the Intune primary users of pilot devices.
+Use a dedicated group: other user members are removed, except group owners.
+
+The sync script stops on Graph errors or incomplete reports, retries HTTP
+429/503/504 responses, and checks `MaxRemovals` before making changes. An empty
+report stops the run when the pilot group contains devices. Devices already
+in the requested membership state are left alone.
 
 ## Files
 
 | File | Purpose |
 |---|---|
-| `Sync-EucPilotGroup.ps1` | Reconciler: app status -> pilot group membership |
+| `Sync-EucPilotGroup.ps1` | Sync script for pilot and comms group membership |
 | `Install-EucPilotJoin.ps1` | Win32 wrapper installer (writes the opt-in marker) |
 | `Uninstall-EucPilotJoin.ps1` | Win32 wrapper uninstaller (removes the marker) |
 | `Detect-EucPilotJoin.ps1` | Win32 custom detection script |
@@ -57,17 +41,17 @@ Pilot rings / feature updates / app pilots
 
 ## Authentication
 
-| Mode | When | Mechanism | Dependencies |
-|---|---|---|---|
-| Interactive (POC) | Run as a signed-in user | `Connect-MgGraph` prompt with MFA/Conditional Access | `Microsoft.Graph.Authentication` module |
-| Managed identity (PROD) | Azure Automation runbook | Automation identity endpoint (`IDENTITY_ENDPOINT` + `IDENTITY_HEADER`) | None (raw REST) |
+| Mode | Sign-in | Dependency |
+|---|---|---|
+| Local | `Connect-MgGraph` with MFA/Conditional Access | `Microsoft.Graph.Authentication` |
+| Azure Automation | System-assigned managed identity | None |
 
-The script auto-detects the branch: `IDENTITY_ENDPOINT` and `IDENTITY_HEADER`
-present means managed identity; otherwise the interactive prompt opens.
+The script uses managed identity when `IDENTITY_ENDPOINT` and `IDENTITY_HEADER`
+are present; otherwise it prompts for sign-in.
 
 ### Required permissions
 
-Interactive (delegated, consented at the prompt):
+Local runs use these delegated permissions:
 
 - `DeviceManagementApps.Read.All` (install status report)
 - `DeviceManagementManagedDevices.Read.All` (managed device -> Entra device ID)
@@ -75,10 +59,10 @@ Interactive (delegated, consented at the prompt):
 - `User.Read.All` (comms group user lookup)
 - `GroupMember.ReadWrite.All` (group membership writes)
 
-Production (application roles on the managed identity, admin-consented once):
-
-- Same five roles, granted to the Automation account's system-assigned
-  identity.
+Azure Automation uses the same five application permissions, granted to its
+managed identity by an administrator. Delegated membership writes also require
+the signed-in user's group-management rights, such as ownership or an active
+Intune Administrator role for security groups.
 
 `GroupMember.ReadWrite.All` as an application role can change the membership
 of any non-role-assignable group in the tenant. Restrict who can edit or run
@@ -86,100 +70,78 @@ the Automation account accordingly.
 
 ### Read-only demo export
 
-While membership-write consent is pending, export the installed devices for
-manual group loading:
+Export installed devices for manual group import:
 
 ```powershell
 .\Sync-EucPilotGroup.ps1 -JoinAppId <app-guid> -ReadOnly -ExportDirectory C:\Temp\EucPilot
 ```
 
-`-ReadOnly` requests only `DeviceManagementApps.Read.All`,
-`DeviceManagementManagedDevices.Read.All`, and `Device.Read.All`. These read
-scopes still need consent and the signed-in user needs the corresponding
-access. Neither `User.Read.All` nor `GroupMember.ReadWrite.All` is requested.
-`PilotGroupId` is optional in this mode. No groups or owners are read, no
-membership changes are made, and no Teams notification is sent. The Intune
-report POST and GET-only batch POSTs retrieve data; they do not change it.
+This mode requests only `DeviceManagementApps.Read.All`,
+`DeviceManagementManagedDevices.Read.All`, and `Device.Read.All`. Consent and
+user access are still required. It exports data without group operations or
+Teams notifications; `PilotGroupId` is optional.
 
-Two timestamped UTF-8 CSV files are written to `ExportDirectory` (the current
-directory by default):
+Two timestamped UTF-8 CSVs are saved to `ExportDirectory` (the current directory
+by default):
 
 - **`EucPilotCandidates-<timestamp>.csv`**: `DeviceName`, `EntraObjectId`,
   `EntraDeviceId`, `IntuneManagedDeviceId`, `AssignedUserPrincipalName`,
-  `InstallState`, and `FirstInstalled` (ISO 8601, blank if unavailable).
-- **`EntraGroupImport-<timestamp>.csv`**: Entra device **object IDs** under
-  `Member object ID or user principal name [memberObjectIdOrUpn] Required`.
-  This uses Microsoft's current group-member bulk-import header, without a
-  version row.
+  `InstallState`, and `FirstInstalled` (ISO 8601).
+- **`EntraGroupImport-<timestamp>.csv`**: device object IDs in Entra's
+  group-member import format.
 
-Only successfully resolved devices reporting `installed` are exported, once
-per Entra device ID, ordered by first installation time and machine name.
-Missing Intune/Entra records are logged and skipped. The assigned-user UPN
-comes from the Intune managed-device record (the primary user), not the app
-report's user; it can be blank. `MemberCap` does not truncate the export.
-An empty result produces header-only CSVs. `-ReadOnly -WhatIf` retrieves the
-data but suppresses creation of the export directory and files.
+The export includes each resolved installed device once, sorted by first
+installation time and machine name. Missing records are logged and skipped.
+The assigned-user UPN is the Intune primary user; it and the installation time
+can be blank. `MemberCap` does not limit the export. Empty results produce
+header-only CSVs; adding `-WhatIf` suppresses file creation.
 
 To load the pilot device group, open **Entra ID > Groups > All groups >
-your group > Members > Bulk operations > Import members** and upload the
-`EntraGroupImport` CSV. Compare its header with the portal's downloaded
-template, since Microsoft can change template formats. Use `EntraObjectId`,
-not `EntraDeviceId` or `IntuneManagedDeviceId`, when adding devices manually.
-The detail CSV's user column is for reference; the bulk CSV adds devices,
-not users. Review/select devices before import; existing members may be
-reported as already present. Portal import still requires your own group
-management rights (for example, active Intune Administrator PIM for security
-groups).
+your group > Members > Bulk operations > Import members**. Review the
+`EntraGroupImport` CSV and compare its header with the portal template before
+uploading. The import adds devices; existing members may be reported as already
+present. For individual additions, use `EntraObjectId`. Import requires your
+own group-management rights, such as active Intune Administrator PIM.
 
 See [Microsoft's bulk group-member import instructions](https://learn.microsoft.com/en-us/entra/identity/users/groups-bulk-import-members).
 
-## POC run steps
+## Local testing
 
-1. Pick or create the Join app in Intune and copy its **Object ID**
-   (`GET /deviceAppManagement/mobileApps?$filter=displayName eq '...'`).
-   For a quick POC, any app already installed on your test device works.
+1. Copy the Join app's **Object ID** from Intune. For a demo, you can use an
+   app already installed on your test device.
 2. Create `SEC-EUC-Pilot-Devices-POC` in Entra as an **assigned security
-   group** (not dynamic, not synced) and copy its **Object ID**. The script
-   refuses to run against any other group type.
-3. Install the SDK once:
-   `Install-Module Microsoft.Graph.Authentication -Scope CurrentUser`.
-   Avoid **2.41.0 and 2.41.1**: they fail `Connect-MgGraph` with
-   `Could not load file or assembly 'System.Text.Json, Version=10.0.0.0'`
-   (microsoftgraph/msgraph-sdk-powershell#3810, fixed after 2.41.1). The
-   script skips those versions and uses any other installed one; if 2.41.x is
-   all you have, install a known-good release alongside it:
-   `Install-Module Microsoft.Graph.Authentication -RequiredVersion 2.40.0 -Scope CurrentUser -Force`.
-   If 2.41.x was already imported in the current window (for example by an
-   earlier failed run), its assemblies cannot be unloaded: run the script from
-   a **new** PowerShell session.
-4. Dry run:
+   group** (not dynamic or synced) and copy its **Object ID**.
+3. Install a working authentication module:
+
+   ```powershell
+   Install-Module Microsoft.Graph.Authentication -RequiredVersion 2.40.0 -Scope CurrentUser -Force
+   ```
+
+   Versions **2.41.0 and 2.41.1** have a `System.Text.Json` sign-in issue and
+   are skipped. If either was already loaded, open a new PowerShell session.
+4. Preview changes:
    `.\Sync-EucPilotGroup.ps1 -JoinAppId <id> -PilotGroupId <gid> -WhatIf`
-   Sign in at the interactive prompt (MFA applies), review the planned diff.
-5. Real run: drop `-WhatIf`. Verify the device appears in the group.
-6. Run again: expect zero adds and zero removes (idempotency).
-7. Delete the device from the group in the portal, re-run, confirm re-add.
-8. Failure guard: with at least one device in the group, run with a bogus
-   `-JoinAppId`. The report returns no rows and the script must abort
-   without removing anything.
+   Sign in and review the plan. Add `-UseDeviceCode` if browser sign-in hangs.
+5. Remove `-WhatIf` to apply changes. Run again to confirm there are no further
+   changes. Remove a device manually and rerun to check that it is added back.
+6. To test the empty-report guard, use an app with no report rows while the
+   pilot group contains a device. The run should stop before changes.
 
 If the tenant restricts user consent, an admin grants tenant-wide consent to
 the **Microsoft Graph PowerShell** application for the five scopes above.
 
-If the install report call fails with HTTP 400/404, switch the report action
-with `-InstallReportAction getDeviceInstallStatusReport`. Both are Intune
-beta report actions; the replacement for the retired `deviceStatuses` API.
+For report errors HTTP 400/404, try
+`-InstallReportAction getDeviceInstallStatusReport`.
 
-## Moving to production (Azure Automation)
+## Azure Automation
 
 1. Import `Sync-EucPilotGroup.ps1` as a runbook. No Graph modules needed.
 2. Enable the system-assigned managed identity.
 3. Admin-consent the five application roles to that identity.
-4. Optional Teams notification: create a Teams **Workflows** webhook ("Post
-   to a channel when a webhook request is received") and store its URL in an
-   **encrypted** Automation variable, e.g. `EucPilotTeamsWebhook`. Pass the
-   variable **name** via `TeamsWebhookVariable`; never pass the URL itself as
-   a parameter in Automation, because job parameters are visible in job
-   history. (For local runs, `-TeamsWebhookUri '<url>'` is fine.)
+4. For Teams notifications, create a **Workflows** webhook and store its URL
+   in an **encrypted** Automation variable, such as `EucPilotTeamsWebhook`.
+   Pass its name through `TeamsWebhookVariable`. Avoid passing the URL as a
+   runbook parameter, since parameters are recorded in job history.
 5. Set runbook parameters:
 
    | Parameter | Default | Purpose |
@@ -192,17 +154,12 @@ beta report actions; the replacement for the retired `deviceStatuses` API.
    | `MemberCap` | 50 | Max pilot devices; extra installs are deferred first-come-first-served. 0 = no cap |
    | `MaxRemovals` | 10 | Abort the run if more removals are planned for either group |
    | `TeamsWebhookVariable` | none | Name of the encrypted variable from step 4 |
-   | `TeamsWebhookUri` | none | Direct webhook URL for local/POC runs only |
+   | `TeamsWebhookUri` | none | Direct webhook URL for local runs |
    | `InstallReportAction` | `retrieveDeviceAppInstallationStatusReport` | Report action fallback switch |
 
-6. Schedule hourly (the minimum Azure Automation schedule recurrence).
-   Intune install status itself can lag, so faster runs add little.
-7. Assign pilot payloads to the group and **exclude the group from all
-   production update rings** (overlapping Windows Update rings apply no
-   policy).
-
-The comms group should be dedicated to this program: any user member who is
-not the primary user of a pilot device is removed, except group owners.
+6. Schedule hourly; Intune installation status can take time to update.
+7. Assign pilot updates and apps to the group. **Exclude it from production
+   update rings** to avoid overlapping assignments.
 
 ## Intune app packaging
 
@@ -212,9 +169,7 @@ not the primary user of a pilot device is removed, except group owners.
    .\Build-IntuneWin.ps1 -IntuneWinAppUtilPath C:\Tools\IntuneWinAppUtil.exe
    ```
 
-   The `.intunewin` is written to the `EucPilotProgramOutput` folder beside
-   this one. Run `.\Test-EucPilotProgram.ps1` separately if you want the
-   offline validation checks.
+   Output is saved to `EucPilotProgramOutput` beside this folder.
 
 2. Create a Windows app (Win32) in Intune with these values:
    - Install behavior: **System**
@@ -233,56 +188,31 @@ not the primary user of a pilot device is removed, except group owners.
    ```
 
 5. Detection rule: **Use a custom detection script**, upload
-   `Detect-EucPilotJoin.ps1`. It reads both the redirected and native marker
-   keys, so the "run as 64-bit" toggle can be left at its default. Do not
-   enforce signature checking unless the scripts are signed.
+   `Detect-EucPilotJoin.ps1`. Leave the "run as 64-bit" toggle at its default;
+   enable signature checking only if the scripts are signed.
 6. Assignment: **Available for enrolled devices** so users install it from
-   the Company Portal. Available apps are user-uninstallable and Intune does
-   not automatically reinstall an uninstalled available app, which makes
-   uninstall a sticky opt-out.
+   Company Portal and can uninstall it to leave the pilot.
 
-**Why detection reads WOW6432Node:** writing to the root of HKLM is not
-permitted in this environment, so the marker lives under `HKLM\SOFTWARE`.
-The Intune Management Extension runs the install from a 32-bit process, and
-WOW64 redirects `HKLM\SOFTWARE` writes to `HKLM\SOFTWARE\WOW6432Node`, so
-the marker physically lands at
-`HKLM\SOFTWARE\WOW6432Node\EucPilotProgram`. The detection script reads that
-redirected node, and falls back to the native `SOFTWARE` key so it works
-whether Intune runs detection as a 32-bit or 64-bit process. Uninstall
-removes both physical copies. All scripts use plain PowerShell registry
-cmdlets - no Sysnative, .cmd, .vbs, or .NET code.
+The app writes a `Joined` marker under `HKLM:\SOFTWARE\EucPilotProgram`.
+Detection checks `WOW6432Node` first, then the native path; uninstall removes
+both. The marker is for app detection, while the Entra group controls pilot
+assignments. Installation requires a working Intune Management Extension.
 
 ## Validation
 
-Run `.\Test-EucPilotProgram.ps1` before every commit. It parses all scripts,
-applies the project PSScriptAnalyzer settings (Windows PowerShell 5.1
-compatibility), and checks the Join app registry contract. No network access
-or sign-in is required. Use `-WhatIf` on the reconciler to review a plan
-against the live tenant without writing.
+Run `.\Test-EucPilotProgram.ps1` before committing script changes. It checks
+parsing, Windows PowerShell 5.1 compatibility, and the Join app registry
+contract offline. Use `-WhatIf` on the sync script to preview live changes.
 
-## Edge cases
+## Troubleshooting
 
 | Case | Behavior |
 |---|---|
-| Multi-device user | Installs on each device they want piloted |
 | Shared device | Device-wide signal; every user of the device gets pilot payloads |
-| Device unenrolled | Status disappears; reconciler removes it on the next run |
 | Stale report entry (managed device deleted) | Skipped and logged; does not halt the run |
 | Intune device with no Entra object | Skipped before the cap, never consumes a slot |
-| Install pending, failed, or detection hiccup | Held: kept if a member, not added if not |
-| Leave then rejoin | Reinstall; the next cycle re-adds |
-| App deleted, unassigned, or wrong app ID | Report has zero rows; run aborts without removals |
-| Partial report page | Row count mismatch with `TotalRowCount`; run aborts |
-| Mass removal (> `MaxRemovals`) | Run aborts before any write |
 | Member cap reached | Removals free slots first; remaining adds are deferred oldest-install-first |
-| Graph throttling | Retried with `Retry-After`; persistent throttling halts the run |
 | Teams webhook fails | Logged as a warning; membership changes stand |
 
-## Notes
-
-- The registry marker is only the wrapper app's detection state. The Entra
-  group is the single source of truth for all pilot assignments.
-- Win32 install/uninstall requires a healthy Intune Management Extension on
-  the device; it is installed automatically on managed Windows devices.
-- The reconciler uses Graph v1.0 for everything except the Intune install
-  status report, which only exists in beta (`/beta/deviceManagement/reports`).
+The sync script uses Graph v1.0, except for the Intune installation report,
+which uses `/beta/deviceManagement/reports`.
