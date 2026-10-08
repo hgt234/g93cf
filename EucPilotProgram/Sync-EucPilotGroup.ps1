@@ -35,8 +35,19 @@ Name of an Azure Automation encrypted variable (or, for local runs, an
 environment variable) holding a Teams Workflows webhook URL. The URL itself
 is never passed as a parameter so it does not appear in job history.
 
+.PARAMETER ReadOnly
+Exports resolved installed devices without reading or changing groups. Requests
+only Intune app/managed-device and Entra device read scopes. Writes local CSVs.
+
+.PARAMETER ExportDirectory
+Directory for the detail and Entra bulk-import CSVs in ReadOnly mode. Defaults
+to the current directory. MemberCap does not limit this export.
+
 .EXAMPLE
 .\Sync-EucPilotGroup.ps1 -JoinAppId <mobileApp-guid> -PilotGroupId <group-guid> -WhatIf
+
+.EXAMPLE
+.\Sync-EucPilotGroup.ps1 -JoinAppId <mobileApp-guid> -ReadOnly -ExportDirectory C:\Temp\EucPilot
 #>
 [CmdletBinding(SupportsShouldProcess)]
 param(
@@ -44,12 +55,16 @@ param(
     [ValidatePattern('^[0-9a-fA-F]{8}-([0-9a-fA-F]{4}-){3}[0-9a-fA-F]{12}$')]
     [string] $JoinAppId,
 
-    [Parameter(Mandatory)]
     [ValidatePattern('^[0-9a-fA-F]{8}-([0-9a-fA-F]{4}-){3}[0-9a-fA-F]{12}$')]
     [string] $PilotGroupId,
 
     [ValidatePattern('^$|^[0-9a-fA-F]{8}-([0-9a-fA-F]{4}-){3}[0-9a-fA-F]{12}$')]
     [string] $CommsGroupId,
+
+    [switch] $ReadOnly,
+
+    [ValidateNotNullOrEmpty()]
+    [string] $ExportDirectory = '.',
 
     # Maximum pilot devices. 0 = no cap.
     [ValidateRange(0, 100000)]
@@ -77,6 +92,10 @@ param(
 Set-StrictMode -Version 3.0
 $ErrorActionPreference = 'Stop'
 
+if (-not $ReadOnly -and -not $PilotGroupId) {
+    throw 'PilotGroupId is required unless -ReadOnly is specified.'
+}
+
 $script:graphRoot = 'https://graph.microsoft.com'
 $script:graphBase = "$script:graphRoot/v1.0"
 $script:graphSession = $null
@@ -88,9 +107,10 @@ $requiredScopes = @(
     'DeviceManagementApps.Read.All'
     'DeviceManagementManagedDevices.Read.All'
     'Device.Read.All'
-    'User.Read.All'
-    'GroupMember.ReadWrite.All'
 )
+if (-not $ReadOnly) {
+    $requiredScopes += @('User.Read.All', 'GroupMember.ReadWrite.All')
+}
 
 # ---------------------------------------------------------------------------
 # Helpers. Functions never write to the output stream except their return
@@ -595,9 +615,11 @@ Write-Output 'EUC Pilot Group Reconciler'
 $script:graphSession = Connect-PilotGraph -TenantId $TenantId -Scopes $requiredScopes -DeviceCode:$UseDeviceCode
 Write-Output ('Connected to Microsoft Graph as {0} ({1}).' -f $script:graphSession.Account, $script:graphSession.Mode)
 
-$pilotGroupName = Assert-PilotGroupWritable -GroupId $PilotGroupId -Purpose 'Pilot' -RequireSecurityGroup
-if ($CommsGroupId) {
-    $commsGroupName = Assert-PilotGroupWritable -GroupId $CommsGroupId -Purpose 'Comms'
+if (-not $ReadOnly) {
+    $pilotGroupName = Assert-PilotGroupWritable -GroupId $PilotGroupId -Purpose 'Pilot' -RequireSecurityGroup
+    if ($CommsGroupId) {
+        $commsGroupName = Assert-PilotGroupWritable -GroupId $CommsGroupId -Purpose 'Comms'
+    }
 }
 
 # ---------------------------------------------------------------------------
@@ -634,7 +656,10 @@ foreach ($row in $reportRows) {
 # ---------------------------------------------------------------------------
 # 2. Map installed/held Intune devices to Entra device IDs (batched)
 # ---------------------------------------------------------------------------
-$lookupIds = @($intuneDevices.Keys | Where-Object { $intuneDevices[$_].Disposition -ne 'optedOut' })
+$lookupIds = @($intuneDevices.Keys | Where-Object {
+        if ($ReadOnly) { $intuneDevices[$_].Disposition -eq 'installed' }
+        else { $intuneDevices[$_].Disposition -ne 'optedOut' }
+    })
 $lookupRequests = @()
 for ($i = 0; $i -lt $lookupIds.Count; $i++) {
     $lookupRequests += @{
@@ -671,6 +696,7 @@ for ($i = 0; $i -lt $lookupIds.Count; $i++) {
             FirstInstalled    = $reportEntry.FirstInstalled
             DeviceName        = $deviceName
             UserPrincipalName = [string](Get-PilotProperty $result.Body 'userPrincipalName')
+            IntuneManagedDeviceId = $lookupIds[$i]
         }
     }
 }
@@ -678,6 +704,69 @@ for ($i = 0; $i -lt $lookupIds.Count; $i++) {
 # ---------------------------------------------------------------------------
 # 3. Current pilot group device members
 # ---------------------------------------------------------------------------
+if ($ReadOnly) {
+    $exportDeviceIds = @($entraDevices.Keys | Sort-Object)
+    $exportRequests = @()
+    for ($i = 0; $i -lt $exportDeviceIds.Count; $i++) {
+        $exportRequests += @{
+            id     = [string]$i
+            method = 'GET'
+            url    = "/devices(deviceId='$($exportDeviceIds[$i])')?`$select=id,deviceId"
+        }
+    }
+    $exportResults = Invoke-PilotGraphBatch -Requests $exportRequests
+    $resolvedExportRows = New-Object 'System.Collections.Generic.List[object]'
+    for ($i = 0; $i -lt $exportDeviceIds.Count; $i++) {
+        $deviceId = $exportDeviceIds[$i]
+        $info = $entraDevices[$deviceId]
+        $result = $exportResults[[string]$i]
+        if ($result.Status -eq 404) {
+            Write-Output ('SKIP (no Entra device object): {0} ({1})' -f $info.DeviceName, $deviceId)
+            continue
+        }
+        if ($result.Status -ne 200) {
+            throw ('Entra device lookup for {0} failed with HTTP {1}.' -f $deviceId, $result.Status)
+        }
+        $objectId = [string](Get-PilotProperty $result.Body 'id')
+        if (-not $objectId) { throw "Entra device lookup for $deviceId returned no object ID." }
+        $resolvedExportRows.Add([pscustomobject]@{
+            DeviceName                = $info.DeviceName
+            EntraObjectId             = $objectId
+            EntraDeviceId             = $deviceId
+            IntuneManagedDeviceId     = $info.IntuneManagedDeviceId
+            AssignedUserPrincipalName = $info.UserPrincipalName
+            InstallState              = 'installed'
+            FirstInstalled            = if ($info.FirstInstalled -ne [DateTimeOffset]::MaxValue) { $info.FirstInstalled.ToString('o') } else { '' }
+        })
+    }
+    $exportRows = @($resolvedExportRows.ToArray() | Sort-Object @{ Expression = {
+                if ($_.FirstInstalled) { [DateTimeOffset]::Parse($_.FirstInstalled) }
+                else { [DateTimeOffset]::MaxValue }
+            } }, DeviceName)
+    $stamp = Get-Date -Format 'yyyyMMdd-HHmmss-fff'
+    $detailPath = Join-Path $ExportDirectory "EucPilotCandidates-$stamp.csv"
+    $importPath = Join-Path $ExportDirectory "EntraGroupImport-$stamp.csv"
+    $importHeader = 'Member object ID or user principal name [memberObjectIdOrUpn] Required'
+    if ($PSCmdlet.ShouldProcess($ExportDirectory, 'Export installed-device detail and Entra bulk-import CSVs')) {
+        if (-not (Test-Path -LiteralPath $ExportDirectory -PathType Container)) {
+            New-Item -Path $ExportDirectory -ItemType Directory -Force | Out-Null
+        }
+        if ($exportRows.Count -gt 0) {
+            $exportRows | Export-Csv -LiteralPath $detailPath -NoTypeInformation -Encoding UTF8
+        }
+        else {
+            'DeviceName,EntraObjectId,EntraDeviceId,IntuneManagedDeviceId,AssignedUserPrincipalName,InstallState,FirstInstalled' |
+                Set-Content -LiteralPath $detailPath -Encoding UTF8
+        }
+        @($importHeader) + @($exportRows | ForEach-Object { $_.EntraObjectId }) |
+            Set-Content -LiteralPath $importPath -Encoding UTF8
+        Write-Output "Detail CSV: $detailPath"
+        Write-Output "Entra import CSV: $importPath"
+    }
+    Write-Output ('ReadOnly: {0} resolved installed device(s); no group operations. MemberCap is not applied.' -f $exportRows.Count)
+    return
+}
+
 Write-Output "Reading pilot group '$pilotGroupName' membership..."
 $current = @{}
 foreach ($member in (Get-PilotGraphPaged -Uri "/groups/$PilotGroupId/members")) {

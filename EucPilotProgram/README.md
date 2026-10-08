@@ -84,6 +84,55 @@ Production (application roles on the managed identity, admin-consented once):
 of any non-role-assignable group in the tenant. Restrict who can edit or run
 the Automation account accordingly.
 
+### Read-only demo export
+
+While membership-write consent is pending, export the installed devices for
+manual group loading:
+
+```powershell
+.\Sync-EucPilotGroup.ps1 -JoinAppId <app-guid> -ReadOnly -ExportDirectory C:\Temp\EucPilot
+```
+
+`-ReadOnly` requests only `DeviceManagementApps.Read.All`,
+`DeviceManagementManagedDevices.Read.All`, and `Device.Read.All`. These read
+scopes still need consent and the signed-in user needs the corresponding
+access. Neither `User.Read.All` nor `GroupMember.ReadWrite.All` is requested.
+`PilotGroupId` is optional in this mode. No groups or owners are read, no
+membership changes are made, and no Teams notification is sent. The Intune
+report POST and GET-only batch POSTs retrieve data; they do not change it.
+
+Two timestamped UTF-8 CSV files are written to `ExportDirectory` (the current
+directory by default):
+
+- **`EucPilotCandidates-<timestamp>.csv`**: `DeviceName`, `EntraObjectId`,
+  `EntraDeviceId`, `IntuneManagedDeviceId`, `AssignedUserPrincipalName`,
+  `InstallState`, and `FirstInstalled` (ISO 8601, blank if unavailable).
+- **`EntraGroupImport-<timestamp>.csv`**: Entra device **object IDs** under
+  `Member object ID or user principal name [memberObjectIdOrUpn] Required`.
+  This uses Microsoft's current group-member bulk-import header, without a
+  version row.
+
+Only successfully resolved devices reporting `installed` are exported, once
+per Entra device ID, ordered by first installation time and machine name.
+Missing Intune/Entra records are logged and skipped. The assigned-user UPN
+comes from the Intune managed-device record (the primary user), not the app
+report's user; it can be blank. `MemberCap` does not truncate the export.
+An empty result produces header-only CSVs. `-ReadOnly -WhatIf` retrieves the
+data but suppresses creation of the export directory and files.
+
+To load the pilot device group, open **Entra ID > Groups > All groups >
+your group > Members > Bulk operations > Import members** and upload the
+`EntraGroupImport` CSV. Compare its header with the portal's downloaded
+template, since Microsoft can change template formats. Use `EntraObjectId`,
+not `EntraDeviceId` or `IntuneManagedDeviceId`, when adding devices manually.
+The detail CSV's user column is for reference; the bulk CSV adds devices,
+not users. Review/select devices before import; existing members may be
+reported as already present. Portal import still requires your own group
+management rights (for example, active Intune Administrator PIM for security
+groups).
+
+See [Microsoft's bulk group-member import instructions](https://learn.microsoft.com/en-us/entra/identity/users/groups-bulk-import-members).
+
 ## POC run steps
 
 1. Pick or create the Join app in Intune and copy its **Object ID**
@@ -137,6 +186,8 @@ beta report actions; the replacement for the retired `deviceStatuses` API.
    |---|---|---|
    | `JoinAppId` | required | Intune Join app object ID |
    | `PilotGroupId` | required | Assigned security group for pilot devices |
+   | `ReadOnly` | false | Export installed devices without group operations; makes `PilotGroupId` optional |
+   | `ExportDirectory` | current directory | Local directory for detail and device bulk-import CSVs with `ReadOnly` |
    | `CommsGroupId` | none | Optional dedicated user group for pilot comms |
    | `MemberCap` | 50 | Max pilot devices; extra installs are deferred first-come-first-served. 0 = no cap |
    | `MaxRemovals` | 10 | Abort the run if more removals are planned for either group |
