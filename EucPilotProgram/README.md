@@ -100,6 +100,9 @@ the Automation account accordingly.
    script skips those versions and uses any other installed one; if 2.41.x is
    all you have, install a known-good release alongside it:
    `Install-Module Microsoft.Graph.Authentication -RequiredVersion 2.40.0 -Scope CurrentUser -Force`.
+   If 2.41.x was already imported in the current window (for example by an
+   earlier failed run), its assemblies cannot be unloaded: run the script from
+   a **new** PowerShell session.
 4. Dry run:
    `.\Sync-EucPilotGroup.ps1 -JoinAppId <id> -PilotGroupId <gid> -WhatIf`
    Sign in at the interactive prompt (MFA applies), review the planned diff.

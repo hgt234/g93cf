@@ -99,43 +99,57 @@ function Get-PilotProperty {
     return $null
 }
 
-function Select-PilotAuthModule {
-    # Microsoft.Graph.Authentication 2.41.0/2.41.1 fail to load their bundled
-    # System.Text.Json 10; Connect-MgGraph then dies with "Could not load file
-    # or assembly 'System.Text.Json, Version=10.0.0.0'"
-    # (microsoftgraph/msgraph-sdk-powershell#3810). Prefer the newest version
-    # outside that broken range so a side-by-side 2.40.0 keeps working.
-    $brokenMin = [version] '2.41.0'
-    $brokenMax = [version] '2.41.1'
+function Test-PilotBrokenAuthVersion {
+    # Microsoft.Graph.Authentication 2.41.0/2.41.1 fail Connect-MgGraph with
+    # "Could not load file or assembly 'System.Text.Json, Version=10.0.0.0'"
+    # (microsoftgraph/msgraph-sdk-powershell#3810).
+    param([Parameter(Mandatory)] [version] $Version)
+    $normalized = [version]('{0}.{1}.{2}' -f $Version.Major, $Version.Minor, [Math]::Max(0, $Version.Build))
+    return ($normalized -ge [version]'2.41.0' -and $normalized -le [version]'2.41.1')
+}
+
+function Import-PilotAuthModule {
+    # Loads a working Microsoft.Graph.Authentication. A .NET process can hold
+    # only one version of the module's assemblies, and Remove-Module does not
+    # unload them, so whatever this session already loaded decides the outcome.
+    $loadedAssembly = [AppDomain]::CurrentDomain.GetAssemblies() |
+        Where-Object { $_.GetName().Name -eq 'Microsoft.Graph.Authentication' } |
+        Select-Object -First 1
+    if ($loadedAssembly) {
+        $loadedVersion = $loadedAssembly.GetName().Version
+        if (Test-PilotBrokenAuthVersion -Version $loadedVersion) {
+            throw ('This PowerShell session already loaded Microsoft.Graph.Authentication {0}, which cannot sign in (System.Text.Json bug #3810), and it cannot be unloaded. Close this window and run the script from a NEW PowerShell session (pwsh -NoProfile); it will load a working version.' -f
+                $loadedVersion)
+        }
+        if (-not (Get-Module -Name Microsoft.Graph.Authentication)) {
+            # Assemblies remain from an earlier Remove-Module; re-import the
+            # matching installed version so the cmdlets bind to them.
+            $matching = Get-Module -ListAvailable -Name Microsoft.Graph.Authentication |
+                Where-Object { $_.Version.Major -eq $loadedVersion.Major -and $_.Version.Minor -eq $loadedVersion.Minor -and $_.Version.Build -eq $loadedVersion.Build } |
+                Select-Object -First 1
+            if (-not $matching) {
+                throw ('Microsoft.Graph.Authentication {0} assemblies are loaded but that version is not installed. Start a new PowerShell session.' -f $loadedVersion)
+            }
+            Import-Module $matching.Path
+        }
+        return
+    }
 
     $installed = @(Get-Module -ListAvailable -Name Microsoft.Graph.Authentication)
     if ($installed.Count -eq 0) {
-        throw 'Microsoft.Graph.Authentication is required for interactive sign-in. Run: Install-Module Microsoft.Graph.Authentication -Scope CurrentUser'
+        throw 'Microsoft.Graph.Authentication is required for interactive sign-in. Run: Install-Module Microsoft.Graph.Authentication -RequiredVersion 2.40.0 -Scope CurrentUser'
     }
-
-    $usable = New-Object 'System.Collections.Generic.List[object]'
-    $broken = New-Object 'System.Collections.Generic.List[string]'
-    foreach ($candidate in $installed) {
-        $version = [version] $candidate.Version
-        if ($version -ge $brokenMin -and $version -le $brokenMax) {
-            $broken.Add($candidate.Version.ToString())
-        }
-        else {
-            $usable.Add($candidate)
-        }
+    $usable = @($installed | Where-Object { -not (Test-PilotBrokenAuthVersion -Version $_.Version) } | Sort-Object Version -Descending)
+    $broken = @($installed | Where-Object { Test-PilotBrokenAuthVersion -Version $_.Version } | ForEach-Object { $_.Version.ToString() })
+    if ($usable.Count -eq 0) {
+        throw ('Microsoft.Graph.Authentication {0} cannot sign in (System.Text.Json bug #3810). Install a working release alongside it: Install-Module Microsoft.Graph.Authentication -RequiredVersion 2.40.0 -Scope CurrentUser -Force' -f
+            ($broken -join ', '))
     }
-
-    $usable = @($usable | Sort-Object Version -Descending)
-    if ($usable.Count -gt 0) {
-        if ($broken.Count -gt 0) {
-            Write-Warning ('Ignoring Microsoft.Graph.Authentication {0}: known System.Text.Json load bug (#3810). Using {1}.' -f
-                ($broken -join ', '), $usable[0].Version)
-        }
-        return $usable[0]
+    if ($broken.Count -gt 0) {
+        Write-Warning ('Ignoring Microsoft.Graph.Authentication {0} (System.Text.Json bug #3810); using {1}.' -f
+            ($broken -join ', '), $usable[0].Version)
     }
-
-    throw ('Microsoft.Graph.Authentication {0} cannot sign in: it fails to load its bundled System.Text.Json 10 (microsoftgraph/msgraph-sdk-powershell#3810). Install a fixed release, e.g. {1}' -f
-        ($broken -join ', '), 'Install-Module Microsoft.Graph.Authentication -RequiredVersion 2.40.0 -Scope CurrentUser -Force')
+    Import-Module $usable[0].Path
 }
 
 function Connect-PilotGraph {
@@ -153,8 +167,7 @@ function Connect-PilotGraph {
         return [pscustomobject]@{ Mode = 'ManagedIdentity'; Token = [string]$accessToken; Account = 'managed identity' }
     }
 
-    $module = Select-PilotAuthModule
-    Import-Module $module.Path -Force
+    Import-PilotAuthModule
 
     $connectArgs = @{ Scopes = $Scopes; NoWelcome = $true }
     if ($TenantId) { $connectArgs.TenantId = $TenantId }
