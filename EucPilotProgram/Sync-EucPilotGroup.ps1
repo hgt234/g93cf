@@ -25,6 +25,11 @@ Authentication branches:
 - Interactive (POC): Connect-MgGraph with MFA/Conditional Access; requires
   the Microsoft.Graph.Authentication module.
 
+.PARAMETER TeamsWebhookUri
+A Teams Workflows webhook URL to post the run summary to. Convenient for
+local runs; do NOT use this in Azure Automation, where parameter values are
+recorded in job history - use -TeamsWebhookVariable there instead.
+
 .PARAMETER TeamsWebhookVariable
 Name of an Azure Automation encrypted variable (or, for local runs, an
 environment variable) holding a Teams Workflows webhook URL. The URL itself
@@ -54,6 +59,8 @@ param(
     # either group. 0 = abort on any removal.
     [ValidateRange(0, 100000)]
     [int] $MaxRemovals = 10,
+
+    [string] $TeamsWebhookUri,
 
     [string] $TeamsWebhookVariable,
 
@@ -536,17 +543,23 @@ function Invoke-PilotMembershipChange {
 
 function Send-PilotTeamsNotification {
     # Best effort: a notification failure never fails the run.
-    param([Parameter(Mandatory)] [string] $VariableName, [Parameter(Mandatory)] [string[]] $Lines)
+    param(
+        [string] $Uri,
+        [string] $VariableName,
+        [Parameter(Mandatory)] [string[]] $Lines
+    )
     try {
-        $webhookUri = $null
-        if (Get-Command -Name Get-AutomationVariable -ErrorAction SilentlyContinue) {
-            $webhookUri = [string](Get-AutomationVariable -Name $VariableName)
-        }
-        else {
-            $webhookUri = [Environment]::GetEnvironmentVariable($VariableName)
+        $webhookUri = $Uri
+        if ([string]::IsNullOrWhiteSpace($webhookUri) -and $VariableName) {
+            if (Get-Command -Name Get-AutomationVariable -ErrorAction SilentlyContinue) {
+                $webhookUri = [string](Get-AutomationVariable -Name $VariableName)
+            }
+            else {
+                $webhookUri = [Environment]::GetEnvironmentVariable($VariableName)
+            }
         }
         if ([string]::IsNullOrWhiteSpace($webhookUri)) {
-            Write-Warning "Teams webhook variable '$VariableName' is empty or missing; notification skipped."
+            Write-Warning 'No Teams webhook URL provided; notification skipped.'
             return
         }
         $cardBody = @(@{ type = 'TextBlock'; text = 'EUC pilot group sync'; weight = 'Bolder'; size = 'Medium' })
@@ -874,6 +887,7 @@ if ($WhatIfPreference) {
 $summaryLines | Write-Output
 
 $changeCount = $addedCount + $removedCount + $commsAddedCount + $commsRemovedCount
-if ($TeamsWebhookVariable -and -not $WhatIfPreference -and ($changeCount -gt 0 -or $deferredCount -gt 0)) {
-    Send-PilotTeamsNotification -VariableName $TeamsWebhookVariable -Lines $summaryLines
+$hasWebhook = $TeamsWebhookUri -or $TeamsWebhookVariable
+if ($hasWebhook -and -not $WhatIfPreference -and ($changeCount -gt 0 -or $deferredCount -gt 0)) {
+    Send-PilotTeamsNotification -Uri $TeamsWebhookUri -VariableName $TeamsWebhookVariable -Lines $summaryLines
 }

@@ -127,8 +127,10 @@ beta report actions; the replacement for the retired `deviceStatuses` API.
 3. Admin-consent the five application roles to that identity.
 4. Optional Teams notification: create a Teams **Workflows** webhook ("Post
    to a channel when a webhook request is received") and store its URL in an
-   **encrypted** Automation variable, e.g. `EucPilotTeamsWebhook`. Never pass
-   the URL as a parameter; job parameters are visible in job history.
+   **encrypted** Automation variable, e.g. `EucPilotTeamsWebhook`. Pass the
+   variable **name** via `TeamsWebhookVariable`; never pass the URL itself as
+   a parameter in Automation, because job parameters are visible in job
+   history. (For local runs, `-TeamsWebhookUri '<url>'` is fine.)
 5. Set runbook parameters:
 
    | Parameter | Default | Purpose |
@@ -139,6 +141,7 @@ beta report actions; the replacement for the retired `deviceStatuses` API.
    | `MemberCap` | 50 | Max pilot devices; extra installs are deferred first-come-first-served. 0 = no cap |
    | `MaxRemovals` | 10 | Abort the run if more removals are planned for either group |
    | `TeamsWebhookVariable` | none | Name of the encrypted variable from step 4 |
+   | `TeamsWebhookUri` | none | Direct webhook URL for local/POC runs only |
    | `InstallReportAction` | `retrieveDeviceAppInstallationStatusReport` | Report action fallback switch |
 
 6. Schedule hourly (the minimum Azure Automation schedule recurrence).
