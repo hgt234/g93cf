@@ -59,6 +59,10 @@ param(
 
     [string] $TenantId,
 
+    # Sign in with the device code flow (type a code at a URL) instead of the
+    # interactive browser/WAM prompt, which can hang on locked-down hosts.
+    [switch] $UseDeviceCode,
+
     [ValidateSet('retrieveDeviceAppInstallationStatusReport', 'getDeviceInstallStatusReport')]
     [string] $InstallReportAction = 'retrieveDeviceAppInstallationStatusReport'
 )
@@ -153,7 +157,7 @@ function Import-PilotAuthModule {
 }
 
 function Connect-PilotGraph {
-    param([string] $TenantId, [string[]] $Scopes)
+    param([string] $TenantId, [string[]] $Scopes, [switch] $DeviceCode)
 
     if ($env:IDENTITY_ENDPOINT -and $env:IDENTITY_HEADER) {
         $headers = @{
@@ -171,6 +175,11 @@ function Connect-PilotGraph {
 
     $connectArgs = @{ Scopes = $Scopes; NoWelcome = $true }
     if ($TenantId) { $connectArgs.TenantId = $TenantId }
+    if ($DeviceCode) {
+        $parameterName = if ((Get-Command Connect-MgGraph).Parameters.ContainsKey('UseDeviceCode')) { 'UseDeviceCode' } else { 'UseDeviceAuthentication' }
+        Write-Output ('Signing in with the device code flow ({0}).' -f $parameterName)
+        $connectArgs[$parameterName] = $true
+    }
     Connect-MgGraph @connectArgs | Out-Null
 
     $context = Get-MgContext
@@ -570,7 +579,7 @@ function Send-PilotTeamsNotification {
 # 0. Connect and validate targets
 # ---------------------------------------------------------------------------
 Write-Output 'EUC Pilot Group Reconciler'
-$script:graphSession = Connect-PilotGraph -TenantId $TenantId -Scopes $requiredScopes
+$script:graphSession = Connect-PilotGraph -TenantId $TenantId -Scopes $requiredScopes -DeviceCode:$UseDeviceCode
 Write-Output ('Connected to Microsoft Graph as {0} ({1}).' -f $script:graphSession.Account, $script:graphSession.Mode)
 
 $pilotGroupName = Assert-PilotGroupWritable -GroupId $PilotGroupId -Purpose 'Pilot' -RequireSecurityGroup
