@@ -1,0 +1,15 @@
+{
+  "@odata.type": "#microsoft.graph.windows10WifiConfiguration",
+  "assignments": [
+    {
+      "target": {
+        "@odata.type": "#microsoft.graph.groupAssignmentTarget",
+        "groupId": "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"
+      }
+    }
+  ],
+  "displayName": "Corporate Wi-Fi",
+  "id": "22222222-2222-2222-2222-222222222222",
+  "networkName": "Contoso-Corporate",
+  "sessionTimeoutMinutes": 30
+}

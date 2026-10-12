@@ -1,0 +1,24 @@
+diff --git a/mnt/d/Git/CPF/g93cf/intune-change-tracking/examples/mock-change/baseline/device-configurations/22222222-2222-2222-2222-222222222222.json b/mnt/d/Git/CPF/g93cf/intune-change-tracking/examples/mock-change/current/device-configurations/22222222-2222-2222-2222-222222222222.json
+index b8ca6dd..808563d 100644
+--- a/mnt/d/Git/CPF/g93cf/intune-change-tracking/examples/mock-change/baseline/device-configurations/22222222-2222-2222-2222-222222222222.json
++++ b/mnt/d/Git/CPF/g93cf/intune-change-tracking/examples/mock-change/current/device-configurations/22222222-2222-2222-2222-222222222222.json
+@@ -11,5 +11,5 @@
+   "displayName": "Corporate Wi-Fi",
+   "id": "22222222-2222-2222-2222-222222222222",
+   "networkName": "Contoso-Corporate",
+-  "sessionTimeoutMinutes": 10
++  "sessionTimeoutMinutes": 30
+ }
+diff --git a/mnt/d/Git/CPF/g93cf/intune-change-tracking/examples/mock-change/baseline/settings-catalog/11111111-1111-1111-1111-111111111111.json b/mnt/d/Git/CPF/g93cf/intune-change-tracking/examples/mock-change/current/settings-catalog/11111111-1111-1111-1111-111111111111.json
+index 10a66b7..2d4ec5e 100644
+--- a/mnt/d/Git/CPF/g93cf/intune-change-tracking/examples/mock-change/baseline/settings-catalog/11111111-1111-1111-1111-111111111111.json
++++ b/mnt/d/Git/CPF/g93cf/intune-change-tracking/examples/mock-change/current/settings-catalog/11111111-1111-1111-1111-111111111111.json
+@@ -15,7 +15,7 @@
+     {
+       "settingInstance": {
+         "settingDefinitionId": "device_vendor_msft_policy_config_defender_allowvulnerabledriverblocklist",
+-        "simpleSettingValue": { "value": false }
++        "simpleSettingValue": { "value": true }
+       }
+     }
+   ]

@@ -1,0 +1,106 @@
+trigger: none
+pr: none
+
+parameters:
+  - name: azureServiceConnection
+    type: string
+  - name: subscriptionId
+    type: string
+  - name: tenantId
+    type: string
+  - name: pocId
+    type: string
+    default: POC01
+  - name: resourceGroupName
+    type: string
+    default: rg-avd-hybrid-poc01
+  - name: hostPoolName
+    type: string
+    default: vdpool-avd-hybrid-poc01
+  - name: applicationGroupName
+    type: string
+    default: vdag-avd-hybrid-poc01
+  - name: workspaceResourceGroupName
+    type: string
+    default: rg-avd-poc01
+  - name: workspaceName
+    type: string
+    default: vdws-avd-poc01
+  - name: ritmNumber
+    type: string
+  - name: vmName
+    type: string
+  - name: execute
+    type: boolean
+    default: false
+  - name: confirmationText
+    type: string
+    default: PLAN-ONLY
+
+variables:
+  reportDirectory: $(Build.ArtifactStagingDirectory)/avd-hybrid-decommission
+
+stages:
+  - stage: Plan
+    displayName: Inventory exact hybrid resources
+    jobs:
+      - job: InventoryAndValidate
+        pool:
+          vmImage: windows-latest
+        steps:
+          - task: AzureCLI@2
+            displayName: Validate tags, identities, host, and assignments
+            inputs:
+              azureSubscription: ${{ parameters.azureServiceConnection }}
+              scriptType: pscore
+              scriptLocation: inlineScript
+              inlineScript: |
+                New-Item -ItemType Directory -Path '$(reportDirectory)' -Force | Out-Null
+                & 'AzureVirtualDesktopPoc/scripts/Remove-AvdHybridPoc.ps1' `
+                  -SubscriptionId '${{ parameters.subscriptionId }}' -TenantId '${{ parameters.tenantId }}' `
+                  -PocId '${{ parameters.pocId }}' -ResourceGroupName '${{ parameters.resourceGroupName }}' `
+                  -HostPoolName '${{ parameters.hostPoolName }}' -ApplicationGroupName '${{ parameters.applicationGroupName }}' `
+                  -WorkspaceResourceGroupName '${{ parameters.workspaceResourceGroupName }}' -WorkspaceName '${{ parameters.workspaceName }}' `
+                  -RitmNumber '${{ parameters.ritmNumber }}' -VmName '${{ parameters.vmName }}' `
+                  -ReportPath '$(reportDirectory)/plan.json'
+          - task: PublishPipelineArtifact@1
+            condition: always()
+            inputs:
+              targetPath: $(reportDirectory)
+              artifact: avd-hybrid-decommission-plan
+
+  - stage: Decommission
+    displayName: Approved hybrid Azure teardown
+    dependsOn: Plan
+    condition: and(succeeded(), ${{ eq(parameters.execute, true) }})
+    jobs:
+      - deployment: ApprovedHybridTeardown
+        environment: avd-poc-hybrid-decommission
+        pool:
+          vmImage: windows-latest
+        strategy:
+          runOnce:
+            deploy:
+              steps:
+                - checkout: self
+                - task: AzureCLI@2
+                  displayName: Remove Azure registrations and preserve Proxmox VM
+                  inputs:
+                    azureSubscription: ${{ parameters.azureServiceConnection }}
+                    scriptType: pscore
+                    scriptLocation: inlineScript
+                    inlineScript: |
+                      New-Item -ItemType Directory -Path '$(reportDirectory)' -Force | Out-Null
+                      & 'AzureVirtualDesktopPoc/scripts/Remove-AvdHybridPoc.ps1' `
+                        -SubscriptionId '${{ parameters.subscriptionId }}' -TenantId '${{ parameters.tenantId }}' `
+                        -PocId '${{ parameters.pocId }}' -ResourceGroupName '${{ parameters.resourceGroupName }}' `
+                        -HostPoolName '${{ parameters.hostPoolName }}' -ApplicationGroupName '${{ parameters.applicationGroupName }}' `
+                        -WorkspaceResourceGroupName '${{ parameters.workspaceResourceGroupName }}' -WorkspaceName '${{ parameters.workspaceName }}' `
+                        -RitmNumber '${{ parameters.ritmNumber }}' -VmName '${{ parameters.vmName }}' `
+                        -Execute -ConfirmationText '${{ parameters.confirmationText }}' `
+                        -ReportPath '$(reportDirectory)/execution.json' -Confirm:$false
+                - task: PublishPipelineArtifact@1
+                  condition: always()
+                  inputs:
+                    targetPath: $(reportDirectory)
+                    artifact: avd-hybrid-decommission-execution

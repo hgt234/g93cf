@@ -1,0 +1,22 @@
+{
+  "schemaVersion": 1,
+  "id": "vscode",
+  "displayName": "Visual Studio Code",
+  "publisher": "Microsoft Corporation",
+  "classification": "selfService",
+  "lifecycle": {
+    "strategy": "microsoftStore",
+    "updateAuthority": "microsoftStore",
+    "storeProductId": "XP9KHM4BK9FZ7Q",
+    "autoUpdate": true
+  },
+  "assignment": {
+    "intent": "available",
+    "target": "allUsers",
+    "notifications": "showAll"
+  },
+  "installContext": "storeDefault",
+  "owner": "Endpoint Engineering",
+  "notes": "Keep Store-native. Verify the product ID and publisher in the client's tenant before deployment."
+}
+

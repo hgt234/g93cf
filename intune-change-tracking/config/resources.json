@@ -1,0 +1,113 @@
+{
+  "schemaVersion": 1,
+  "resources": [
+    {
+      "name": "settings-catalog",
+      "apiVersion": "beta",
+      "listPath": "/deviceManagement/configurationPolicies",
+      "detailPath": "/deviceManagement/configurationPolicies/{id}",
+      "children": [
+        { "name": "settings", "path": "settings" },
+        { "name": "assignments", "path": "assignments" }
+      ]
+    },
+    {
+      "name": "device-configurations",
+      "apiVersion": "beta",
+      "listPath": "/deviceManagement/deviceConfigurations",
+      "detailPath": "/deviceManagement/deviceConfigurations/{id}",
+      "children": [
+        { "name": "assignments", "path": "assignments" }
+      ]
+    },
+    {
+      "name": "compliance-policies",
+      "apiVersion": "beta",
+      "listPath": "/deviceManagement/deviceCompliancePolicies",
+      "detailPath": "/deviceManagement/deviceCompliancePolicies/{id}",
+      "children": [
+        { "name": "assignments", "path": "assignments" },
+        { "name": "scheduledActionsForRule", "path": "scheduledActionsForRule" }
+      ]
+    },
+    {
+      "name": "powershell-scripts",
+      "apiVersion": "beta",
+      "listPath": "/deviceManagement/deviceManagementScripts",
+      "detailPath": "/deviceManagement/deviceManagementScripts/{id}",
+      "children": [
+        { "name": "assignments", "path": "assignments" }
+      ]
+    },
+    {
+      "name": "remediations",
+      "apiVersion": "beta",
+      "listPath": "/deviceManagement/deviceHealthScripts",
+      "detailPath": "/deviceManagement/deviceHealthScripts/{id}",
+      "children": [
+        { "name": "assignments", "path": "assignments" }
+      ]
+    },
+    {
+      "name": "shell-scripts",
+      "apiVersion": "beta",
+      "listPath": "/deviceManagement/deviceShellScripts",
+      "detailPath": "/deviceManagement/deviceShellScripts/{id}",
+      "children": [
+        { "name": "assignments", "path": "assignments" }
+      ]
+    },
+    {
+      "name": "assignment-filters",
+      "apiVersion": "beta",
+      "listPath": "/deviceManagement/assignmentFilters",
+      "detailPath": "/deviceManagement/assignmentFilters/{id}",
+      "children": []
+    },
+    {
+      "name": "autopilot-profiles",
+      "apiVersion": "beta",
+      "listPath": "/deviceManagement/windowsAutopilotDeploymentProfiles",
+      "detailPath": "/deviceManagement/windowsAutopilotDeploymentProfiles/{id}",
+      "children": [
+        { "name": "assignments", "path": "assignments" }
+      ]
+    },
+    {
+      "name": "feature-update-profiles",
+      "apiVersion": "beta",
+      "listPath": "/deviceManagement/windowsFeatureUpdateProfiles",
+      "detailPath": "/deviceManagement/windowsFeatureUpdateProfiles/{id}",
+      "children": [
+        { "name": "assignments", "path": "assignments" }
+      ]
+    },
+    {
+      "name": "quality-update-profiles",
+      "apiVersion": "beta",
+      "listPath": "/deviceManagement/windowsQualityUpdatePolicies",
+      "detailPath": "/deviceManagement/windowsQualityUpdatePolicies/{id}",
+      "children": [
+        { "name": "assignments", "path": "assignments" }
+      ]
+    },
+    {
+      "name": "driver-update-profiles",
+      "apiVersion": "beta",
+      "listPath": "/deviceManagement/windowsDriverUpdateProfiles",
+      "detailPath": "/deviceManagement/windowsDriverUpdateProfiles/{id}",
+      "children": [
+        { "name": "assignments", "path": "assignments" }
+      ]
+    },
+    {
+      "name": "mobile-apps",
+      "apiVersion": "beta",
+      "listPath": "/deviceAppManagement/mobileApps",
+      "detailPath": "/deviceAppManagement/mobileApps/{id}",
+      "children": [
+        { "name": "assignments", "path": "assignments" }
+      ]
+    }
+  ]
+}

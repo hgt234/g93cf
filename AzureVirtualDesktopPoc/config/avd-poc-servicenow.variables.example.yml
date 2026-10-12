@@ -1,0 +1,13 @@
+# Create an Azure DevOps variable group named avd-poc-servicenow.
+# For the first developer-instance test, populate SN_USERNAME and SN_PASSWORD.
+# For OAuth, populate SN_CLIENT_ID and SN_CLIENT_SECRET instead. Define the
+# unused pair as empty values. Mark both password/secret fields as secret.
+variables:
+  SN_INSTANCE_URL: https://example.service-now.com
+  SN_CLIENT_ID: ''
+  SN_CLIENT_SECRET: ''
+  SN_USERNAME: avd.integration
+  SN_PASSWORD: replace-me-and-mark-secret
+  SN_STATUS_FIELD: u_avd_build_status
+  SN_HOSTNAME_FIELD: u_avd_hostname
+  SN_PLATFORM_FIELD: u_avd_platform

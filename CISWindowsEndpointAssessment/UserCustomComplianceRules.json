@@ -1,0 +1,88 @@
+{
+    "Rules":  [
+                  {
+                      "SettingName":  "OverallCompliant",
+                      "Operator":  "IsEquals",
+                      "DataType":  "Boolean",
+                      "Operand":  true,
+                      "MoreInfoUrl":  "https://www.cisecurity.org/benchmark/microsoft_windows_desktop",
+                      "RemediationStrings":  [
+                                                 {
+                                                     "Language":  "en_US",
+                                                     "Title":  "The CIS Windows 11 24H2 User assessment found noncompliant settings. Actual value: {ActualValue}.",
+                                                     "Description":  "Contact IT. The detailed HardeningKitty results are stored locally on the endpoint."
+                                                 }
+                                             ]
+                  },
+                  {
+                      "SettingName":  "AssessmentHealthy",
+                      "Operator":  "IsEquals",
+                      "DataType":  "Boolean",
+                      "Operand":  true,
+                      "MoreInfoUrl":  "https://www.cisecurity.org/benchmark/microsoft_windows_desktop",
+                      "RemediationStrings":  [
+                                                 {
+                                                     "Language":  "en_US",
+                                                     "Title":  "The CIS Windows 11 24H2 User assessment did not complete every expected check. Actual value: {ActualValue}.",
+                                                     "Description":  "Contact IT to review execution context, endpoint language, engine installation, and the local assessment report."
+                                                 }
+                                             ]
+                  },
+                  {
+                      "SettingName":  "EngineIntegrity",
+                      "Operator":  "IsEquals",
+                      "DataType":  "Boolean",
+                      "Operand":  true,
+                      "MoreInfoUrl":  "https://www.cisecurity.org/benchmark/microsoft_windows_desktop",
+                      "RemediationStrings":  [
+                                                 {
+                                                     "Language":  "en_US",
+                                                     "Title":  "The pinned HardeningKitty engine failed integrity validation. Actual value: {ActualValue}.",
+                                                     "Description":  "Contact IT to reinstall the approved assessment engine package."
+                                                 }
+                                             ]
+                  },
+                  {
+                      "SettingName":  "AdminTemplatesStartMenuAndTaskbarCompliant",
+                      "Operator":  "IsEquals",
+                      "DataType":  "Boolean",
+                      "Operand":  true,
+                      "MoreInfoUrl":  "https://www.cisecurity.org/benchmark/microsoft_windows_desktop",
+                      "RemediationStrings":  [
+                                                 {
+                                                     "Language":  "en_US",
+                                                     "Title":  "Administrative Templates: Start Menu and Taskbar controls require attention. Actual value: {ActualValue}.",
+                                                     "Description":  "Contact IT; security settings are managed centrally."
+                                                 }
+                                             ]
+                  },
+                  {
+                      "SettingName":  "AdminTemplatesSystemCompliant",
+                      "Operator":  "IsEquals",
+                      "DataType":  "Boolean",
+                      "Operand":  true,
+                      "MoreInfoUrl":  "https://www.cisecurity.org/benchmark/microsoft_windows_desktop",
+                      "RemediationStrings":  [
+                                                 {
+                                                     "Language":  "en_US",
+                                                     "Title":  "Administrative Templates: System controls require attention. Actual value: {ActualValue}.",
+                                                     "Description":  "Contact IT; security settings are managed centrally."
+                                                 }
+                                             ]
+                  },
+                  {
+                      "SettingName":  "AdminTemplatesWindowsComponentsCompliant",
+                      "Operator":  "IsEquals",
+                      "DataType":  "Boolean",
+                      "Operand":  true,
+                      "MoreInfoUrl":  "https://www.cisecurity.org/benchmark/microsoft_windows_desktop",
+                      "RemediationStrings":  [
+                                                 {
+                                                     "Language":  "en_US",
+                                                     "Title":  "Administrative Templates: Windows Components controls require attention. Actual value: {ActualValue}.",
+                                                     "Description":  "Contact IT; security settings are managed centrally."
+                                                 }
+                                             ]
+                  }
+              ]
+}

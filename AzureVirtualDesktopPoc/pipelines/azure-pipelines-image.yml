@@ -1,0 +1,222 @@
+trigger: none
+pr: none
+
+schedules:
+  - cron: '0 6 1 * *'
+    displayName: Monthly Windows 11 image refresh
+    branches:
+      include:
+        - main
+    always: true
+
+parameters:
+  - name: imageBuilderServiceConnection
+    type: string
+  - name: subscriptionId
+    type: string
+  - name: location
+    type: string
+    default: centralus
+  - name: pocId
+    type: string
+    default: POC01
+  - name: resourceGroupName
+    type: string
+    default: rg-avd-poc01
+  - name: imageBuilderSubnetId
+    type: string
+  - name: imageBuilderAciSubnetId
+    type: string
+  - name: customizationScriptUri
+    type: string
+  - name: stagingResourceGroupName
+    type: string
+    default: rg-avd-poc01-aib-stage
+
+variables:
+  artifactDirectory: $(Build.ArtifactStagingDirectory)/avd-image
+
+stages:
+  - stage: ValidateAndDeployTemplate
+    displayName: Validate and deploy additive image resources
+    jobs:
+      - job: ImageTemplate
+        pool:
+          vmImage: windows-latest
+        steps:
+          - task: AzureCLI@2
+            name: template
+            displayName: Compile, what-if, and deploy Image Builder template
+            env:
+              SUBSCRIPTION_ID: ${{ parameters.subscriptionId }}
+              LOCATION: ${{ parameters.location }}
+              POC_ID: ${{ parameters.pocId }}
+              RESOURCE_GROUP: ${{ parameters.resourceGroupName }}
+              IMAGE_BUILDER_SUBNET_ID: ${{ parameters.imageBuilderSubnetId }}
+              IMAGE_BUILDER_ACI_SUBNET_ID: ${{ parameters.imageBuilderAciSubnetId }}
+              CUSTOMIZATION_SCRIPT_URI: ${{ parameters.customizationScriptUri }}
+              STAGING_RESOURCE_GROUP: ${{ parameters.stagingResourceGroupName }}
+            inputs:
+              azureSubscription: ${{ parameters.imageBuilderServiceConnection }}
+              scriptType: pscore
+              scriptLocation: inlineScript
+              inlineScript: |
+                $ErrorActionPreference = 'Stop'
+                New-Item -ItemType Directory -Path '$(artifactDirectory)' -Force | Out-Null
+                $downloadPath = Join-Path ([IO.Path]::GetTempPath()) "avd-image-customizer-$([Guid]::NewGuid().ToString('N')).ps1"
+                try {
+                  Invoke-WebRequest -Uri $env:CUSTOMIZATION_SCRIPT_URI -OutFile $downloadPath
+                  $scriptHash = (Get-FileHash -LiteralPath $downloadPath -Algorithm SHA256).Hash.ToLowerInvariant()
+                }
+                finally {
+                  if (Test-Path -LiteralPath $downloadPath) { Remove-Item -LiteralPath $downloadPath -Force }
+                }
+                $parameterPath = Join-Path '$(Agent.TempDirectory)' 'image-builder.parameters.json'
+                [ordered]@{
+                  pocId = @{ value = $env:POC_ID }
+                  location = @{ value = $env:LOCATION }
+                  resourceGroupName = @{ value = $env:RESOURCE_GROUP }
+                  imageBuilderSubnetId = @{ value = $env:IMAGE_BUILDER_SUBNET_ID }
+                  imageBuilderAciSubnetId = @{ value = $env:IMAGE_BUILDER_ACI_SUBNET_ID }
+                  customizationScriptUri = @{ value = $env:CUSTOMIZATION_SCRIPT_URI }
+                  customizationScriptSha256 = @{ value = $scriptHash }
+                  stagingResourceGroupName = @{ value = $env:STAGING_RESOURCE_GROUP }
+                } | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath $parameterPath -Encoding utf8
+                az bicep build --file 'AzureVirtualDesktopPoc/infra/image-main.bicep'
+                if ($LASTEXITCODE -ne 0) { throw 'Image Builder Bicep compilation failed.' }
+
+                $whatIf = az deployment sub what-if `
+                  --name "avd-image-whatif-$(Build.BuildId)" `
+                  --location $env:LOCATION `
+                  --subscription $env:SUBSCRIPTION_ID `
+                  --template-file 'AzureVirtualDesktopPoc/infra/image-main.bicep' `
+                  --parameters "@$parameterPath" `
+                  --result-format FullResourcePayloads `
+                  --no-pretty-print `
+                  --output json `
+                  --only-show-errors
+                if ($LASTEXITCODE -ne 0) { throw 'Image Builder what-if failed.' }
+                $whatIfText = $whatIf -join [Environment]::NewLine
+                $whatIfText | Set-Content '$(artifactDirectory)/image-what-if.json' -Encoding utf8
+                $whatIfResult = $whatIfText | ConvertFrom-Json -Depth 100
+                if (@($whatIfResult.changes | Where-Object changeType -In @('Delete', 'Recreate')).Count -gt 0) {
+                  throw 'Image Builder what-if contains a delete or recreate operation.'
+                }
+
+                $deployment = az deployment sub create `
+                  --name "avd-image-template-$(Build.BuildId)" `
+                  --location $env:LOCATION `
+                  --subscription $env:SUBSCRIPTION_ID `
+                  --template-file 'AzureVirtualDesktopPoc/infra/image-main.bicep' `
+                  --parameters "@$parameterPath" `
+                  --output json `
+                  --only-show-errors | ConvertFrom-Json -Depth 100
+                if ($LASTEXITCODE -ne 0) { throw 'Image Builder template deployment failed.' }
+                Remove-Item -LiteralPath $parameterPath -Force -ErrorAction SilentlyContinue
+                Write-Host "##vso[task.setvariable variable=imageTemplateName;isOutput=true]$($deployment.properties.outputs.imageTemplateName.value)"
+                Write-Host "##vso[task.setvariable variable=galleryName;isOutput=true]$($deployment.properties.outputs.galleryName.value)"
+                Write-Host "##vso[task.setvariable variable=imageDefinitionName;isOutput=true]$($deployment.properties.outputs.imageDefinitionName.value)"
+          - task: PublishPipelineArtifact@1
+            condition: always()
+            inputs:
+              targetPath: $(artifactDirectory)
+              artifact: avd-image-template
+
+  - stage: BuildImage
+    displayName: Build and publish Compute Gallery image version
+    dependsOn: ValidateAndDeployTemplate
+    condition: succeeded()
+    variables:
+      imageTemplateName: $[ stageDependencies.ValidateAndDeployTemplate.ImageTemplate.outputs['template.imageTemplateName'] ]
+      galleryName: $[ stageDependencies.ValidateAndDeployTemplate.ImageTemplate.outputs['template.galleryName'] ]
+      imageDefinitionName: $[ stageDependencies.ValidateAndDeployTemplate.ImageTemplate.outputs['template.imageDefinitionName'] ]
+    jobs:
+      - job: RunImageBuilder
+        timeoutInMinutes: 260
+        pool:
+          vmImage: windows-latest
+        steps:
+          - task: AzureCLI@2
+            displayName: Start Image Builder and wait for publication
+            env:
+              SUBSCRIPTION_ID: ${{ parameters.subscriptionId }}
+              RESOURCE_GROUP: ${{ parameters.resourceGroupName }}
+              STAGING_RESOURCE_GROUP: ${{ parameters.stagingResourceGroupName }}
+              POC_ID: ${{ parameters.pocId }}
+              IMAGE_TEMPLATE_NAME: $(imageTemplateName)
+              GALLERY_NAME: $(galleryName)
+              IMAGE_DEFINITION_NAME: $(imageDefinitionName)
+            inputs:
+              azureSubscription: ${{ parameters.imageBuilderServiceConnection }}
+              scriptType: pscore
+              scriptLocation: inlineScript
+              inlineScript: |
+                $ErrorActionPreference = 'Stop'
+                New-Item -ItemType Directory -Path '$(artifactDirectory)' -Force | Out-Null
+                az resource invoke-action `
+                  --resource-group $env:RESOURCE_GROUP `
+                  --resource-type 'Microsoft.VirtualMachineImages/imageTemplates' `
+                  --name $env:IMAGE_TEMPLATE_NAME `
+                  --action Run `
+                  --api-version '2024-02-01' `
+                  --subscription $env:SUBSCRIPTION_ID `
+                  --no-wait `
+                  --only-show-errors
+                if ($LASTEXITCODE -ne 0) { throw 'Azure Image Builder did not accept the run request.' }
+
+                $deadline = [DateTime]::UtcNow.AddHours(4)
+                $lastRun = $null
+                while ([DateTime]::UtcNow -lt $deadline) {
+                  $exists = az group exists --name $env:STAGING_RESOURCE_GROUP --subscription $env:SUBSCRIPTION_ID --output tsv
+                  if ($exists -ieq 'true') {
+                    az group update --name $env:STAGING_RESOURCE_GROUP --subscription $env:SUBSCRIPTION_ID --set `
+                      tags.ManagedBy=AzureVirtualDesktopPoc tags.PocId=$env:POC_ID tags.Environment=POC --only-show-errors --output none
+                    if ($LASTEXITCODE -ne 0) { throw 'Unable to apply required safety tags to the Image Builder staging resource group.' }
+                  }
+
+                  $template = az resource show `
+                    --resource-group $env:RESOURCE_GROUP `
+                    --resource-type 'Microsoft.VirtualMachineImages/imageTemplates' `
+                    --name $env:IMAGE_TEMPLATE_NAME `
+                    --api-version '2024-02-01' `
+                    --subscription $env:SUBSCRIPTION_ID `
+                    --output json `
+                    --only-show-errors | ConvertFrom-Json -Depth 100
+                  if ($LASTEXITCODE -ne 0) { throw 'Unable to read Image Builder run status.' }
+                  $lastRun = $template.properties.lastRunStatus
+                  $state = [string]$lastRun.runState
+                  Write-Host "Image Builder state: $state"
+                  if ($state -ieq 'Succeeded') { break }
+                  if ($state -in @('Failed', 'Canceled', 'PartiallySucceeded')) {
+                    throw "Image Builder ended in state '$state': $($lastRun.message)"
+                  }
+                  Start-Sleep -Seconds 60
+                }
+                if ([string]$lastRun.runState -ine 'Succeeded') { throw 'Image Builder did not finish within four hours.' }
+
+                $latestVersionId = az sig image-version list `
+                  --resource-group $env:RESOURCE_GROUP `
+                  --gallery-name $env:GALLERY_NAME `
+                  --gallery-image-definition $env:IMAGE_DEFINITION_NAME `
+                  --subscription $env:SUBSCRIPTION_ID `
+                  --query 'sort_by([], &publishingProfile.publishedDate)[-1].id' `
+                  --output tsv `
+                  --only-show-errors
+                if ($LASTEXITCODE -ne 0 -or -not $latestVersionId) { throw 'No published Compute Gallery image version was found.' }
+
+                $report = [ordered]@{
+                  completedUtc = [DateTime]::UtcNow.ToString('o')
+                  imageTemplateName = $env:IMAGE_TEMPLATE_NAME
+                  galleryName = $env:GALLERY_NAME
+                  imageDefinitionName = $env:IMAGE_DEFINITION_NAME
+                  galleryImageVersionId = $latestVersionId
+                  lastRunStatus = $lastRun
+                }
+                $report | ConvertTo-Json -Depth 100 | Set-Content '$(artifactDirectory)/image-build.json' -Encoding utf8
+                Write-Host "##vso[task.setvariable variable=galleryImageVersionId;isOutput=true]$latestVersionId"
+                Write-Host "Published image version: $latestVersionId"
+          - task: PublishPipelineArtifact@1
+            condition: always()
+            inputs:
+              targetPath: $(artifactDirectory)
+              artifact: avd-image-build

@@ -1,0 +1,22 @@
+{
+  "@odata.type": "#microsoft.graph.deviceManagementConfigurationPolicy",
+  "assignments": [
+    {
+      "target": {
+        "@odata.type": "#microsoft.graph.groupAssignmentTarget",
+        "groupId": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+      }
+    }
+  ],
+  "description": "Corporate Windows security settings",
+  "id": "11111111-1111-1111-1111-111111111111",
+  "name": "Windows - Security Baseline",
+  "settings": [
+    {
+      "settingInstance": {
+        "settingDefinitionId": "device_vendor_msft_policy_config_defender_allowvulnerabledriverblocklist",
+        "simpleSettingValue": { "value": true }
+      }
+    }
+  ]
+}

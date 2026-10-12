@@ -1,0 +1,40 @@
+trigger:
+  branches:
+    include:
+      - main
+  paths:
+    include:
+      - IntuneAppFactory/**
+
+pr:
+  paths:
+    include:
+      - IntuneAppFactory/**
+
+schedules:
+  - cron: "0 7 * * 1-5"
+    displayName: Weekday application manifest validation
+    branches:
+      include:
+        - main
+    always: true
+
+stages:
+  - stage: Validate
+    jobs:
+      - job: Manifests
+        pool:
+          vmImage: windows-2025
+        steps:
+          - checkout: self
+          - pwsh: |
+              ./IntuneAppFactory/scripts/Test-AppManifests.ps1
+              ./IntuneAppFactory/scripts/Get-AppDeploymentPlan.ps1 -Format Json |
+                Set-Content -LiteralPath "$(Build.ArtifactStagingDirectory)/deployment-plan.json" -Encoding utf8
+            displayName: Validate manifests and create deployment plan
+          - publish: $(Build.ArtifactStagingDirectory)/deployment-plan.json
+            artifact: IntuneDeploymentPlan
+
+  # Production implementation adds separate Discover, Build, Test, Pilot and Publish
+  # stages. Publish must use an environment approval and tenant-specific service
+  # connection; it must not run merely because an update was discovered.

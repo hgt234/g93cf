@@ -1,0 +1,80 @@
+trigger: none
+pr: none
+
+variables:
+  - group: avd-poc-servicenow
+
+pool:
+  vmImage: windows-latest
+
+steps:
+  - task: PowerShell@2
+    displayName: Validate read-only ServiceNow configuration API access
+    env:
+      SN_INSTANCE_URL: $(SN_INSTANCE_URL)
+      SN_CLIENT_ID: $(SN_CLIENT_ID)
+      SN_CLIENT_SECRET: $(SN_CLIENT_SECRET)
+    inputs:
+      pwsh: true
+      targetType: inline
+      script: |
+        $ErrorActionPreference = 'Stop'
+        $instance = $env:SN_INSTANCE_URL.TrimEnd('/')
+        $token = Invoke-RestMethod `
+          -Method Post `
+          -Uri "$instance/oauth_token.do" `
+          -ContentType 'application/x-www-form-urlencoded' `
+          -Body @{
+            grant_type = 'client_credentials'
+            client_id = $env:SN_CLIENT_ID
+            client_secret = $env:SN_CLIENT_SECRET
+          }
+        if ([string]::IsNullOrWhiteSpace([string]$token.access_token)) {
+          throw 'ServiceNow did not return an OAuth access token.'
+        }
+
+        $headers = @{ Authorization = "Bearer $($token.access_token)"; Accept = 'application/json' }
+        foreach ($table in @('sys_rest_message', 'sys_rest_message_fn', 'sys_hub_flow')) {
+          $uri = "$instance/api/now/table/$table`?sysparm_limit=1&sysparm_fields=sys_id"
+          $response = Invoke-RestMethod -Method Get -Uri $uri -Headers $headers
+          Write-Host "Read-only access validated for $table; returned $(@($response.result).Count) record(s)."
+        }
+
+        $inventory = [ordered]@{}
+        $lookups = [ordered]@{
+          restMessages = @{ table = 'sys_rest_message'; query = 'nameLIKEAzure DevOps AVD'; fields = 'sys_id,name,rest_endpoint,authentication_type' }
+          restMethods = @{ table = 'sys_rest_message_fn'; query = 'rest_message=8f222b4f831383100732c900feaad361'; fields = 'sys_id,name,function_name,rest_message,http_method,rest_endpoint,authentication_type,active' }
+          authProfiles = @{ table = 'sys_auth_profile_basic'; query = 'nameLIKEAzure DevOps AVD'; fields = 'sys_id,name,username' }
+          catalogItems = @{ table = 'sc_cat_item'; query = 'nameLIKEAVD'; fields = 'sys_id,name,active,flow_designer_flow' }
+          catalogVariables = @{ table = 'item_option_new'; query = 'name=requested_for^question_text=Requested for'; fields = 'sys_id,name,question_text,type,reference,mandatory,active,order,cat_item' }
+          flows = @{ table = 'sys_hub_flow'; query = 'nameLIKEAVD'; fields = 'sys_id,name,status,active' }
+          businessRules = @{ table = 'sys_script'; query = 'collection=sc_req_item^nameSTARTSWITHAVD '; fields = 'sys_id,name,active,when,action_insert,action_update,filter_condition' }
+          testRequest = @{ table = 'sc_req_item'; query = 'sys_id=aeed229047801200e0ef563dbb9a71c2'; fields = 'sys_id,number,cat_item,requested_for,u_avd_build_status,u_avd_hostname,u_ado_run_id,u_ado_run_url,u_ado_queue_state,u_ado_queue_token' }
+          testUsers = @{ table = 'sys_user'; query = 'user_name=AVDtest01@keepitsimple.business^ORemail=AVDtest01@keepitsimple.business'; fields = 'sys_id,user_name,email,active' }
+          requestFields = @{ table = 'sys_dictionary'; query = 'name=sc_req_item^elementINu_avd_build_status,u_avd_hostname,u_ado_run_id,u_ado_run_url,u_ado_queue_state,u_ado_queue_token'; fields = 'sys_id,name,element,column_label,internal_type,max_length,active' }
+          requestWorkNotes = @{ table = 'sys_journal_field'; query = 'element_id=aeed229047801200e0ef563dbb9a71c2^element=work_notes^ORDERBYDESCsys_created_on'; fields = 'sys_id,element_id,element,value,sys_created_on' }
+          queueErrors = @{ table = 'syslog'; query = 'messageLIKEAVD Azure DevOps queue failed^ORDERBYDESCsys_created_on'; fields = 'sys_id,message,level,source,sys_created_on' }
+          configDictionary = @{ table = 'sys_dictionary'; query = 'nameINsys_auth_profile_basic,sys_rest_message,sys_rest_message_fn,sys_script^elementINname,username,password,active,rest_endpoint,authentication_type,basic_auth,rest_message,http_method,content,collection,when,order,filter_condition,script,action_insert,action_update,advanced'; fields = 'name,element,internal_type,reference,mandatory,read_only'; limit = 200 }
+          configChoices = @{ table = 'sys_choice'; query = 'nameINsys_rest_message,sys_rest_message_fn,sys_script^elementINauthentication_type,http_method,when'; fields = 'name,element,label,value,inactive'; limit = 200 }
+          authDictionary = @{ table = 'sys_dictionary'; query = 'nameINsys_rest_message,sys_rest_message_fn^elementLIKEauth'; fields = 'name,element,internal_type,reference,mandatory,read_only'; limit = 100 }
+        }
+        foreach ($entry in $lookups.GetEnumerator()) {
+          $query = [Uri]::EscapeDataString($entry.Value.query)
+          $fields = [Uri]::EscapeDataString($entry.Value.fields)
+          $limit = if ($entry.Value.ContainsKey('limit')) { [int]$entry.Value.limit } else { 20 }
+          $uri = "$instance/api/now/table/$($entry.Value.table)`?sysparm_query=$query&sysparm_fields=$fields&sysparm_limit=$limit"
+          $response = Invoke-RestMethod -Method Get -Uri $uri -Headers $headers
+          $inventory[$entry.Key] = @($response.result)
+        }
+        if ($inventory.testRequest.Count -eq 1 -and $inventory.testRequest[0].requested_for.value) {
+          $userId = [Uri]::EscapeDataString([string]$inventory.testRequest[0].requested_for.value)
+          $uri = "$instance/api/now/table/sys_user/$userId`?sysparm_fields=sys_id,user_name,email,active"
+          $response = Invoke-RestMethod -Method Get -Uri $uri -Headers $headers
+          $inventory['requestedForUser'] = @($response.result)
+        }
+        $inventory | ConvertTo-Json -Depth 10 | Set-Content '$(Build.ArtifactStagingDirectory)/servicenow-avd-inventory.json' -Encoding utf8
+  - task: PublishPipelineArtifact@1
+    displayName: Publish nonsecret AVD configuration inventory
+    inputs:
+      targetPath: $(Build.ArtifactStagingDirectory)/servicenow-avd-inventory.json
+      artifact: servicenow-avd-inventory

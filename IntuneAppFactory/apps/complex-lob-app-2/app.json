@@ -1,0 +1,35 @@
+{
+  "schemaVersion": 1,
+  "id": "complex-lob-app-2",
+  "displayName": "Complex LOB App 2",
+  "publisher": "Client Name",
+  "classification": "selfService",
+  "lifecycle": {
+    "strategy": "psadtWin32",
+    "updateAuthority": "gitPipeline",
+    "discovery": "internalRelease",
+    "autoUpdate": true,
+    "autoUpdateMechanism": "intuneAvailableSupersedence",
+    "version": "2.0.0"
+  },
+  "assignment": {
+    "intent": "available",
+    "target": "allUsers",
+    "notifications": "showAll"
+  },
+  "installContext": "system",
+  "payload": {
+    "fileName": "ComplexLobApp2-Setup.exe",
+    "expectedPublisher": "REPLACE-WITH-SIGNING-SUBJECT",
+    "sha256": "REPLACE-WITH-SHA256"
+  },
+  "detection": {
+    "type": "registryVersion",
+    "keyPath": "HKEY_LOCAL_MACHINE\\SOFTWARE\\ClientName\\ComplexLobApp2",
+    "valueName": "Version",
+    "operator": "greaterThanOrEqual",
+    "version": "2.0.0"
+  },
+  "owner": "Business Application Team",
+  "notes": "Available complex-app example; new releases supersede prior versions and auto-update previous opt-ins."
+}

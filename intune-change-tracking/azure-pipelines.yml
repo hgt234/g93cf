@@ -1,0 +1,109 @@
+trigger: none
+pr: none
+
+schedules:
+  - cron: "17 3 * * *"
+    displayName: Nightly Intune snapshot
+    branches:
+      include:
+        - main
+    always: true
+
+parameters:
+  - name: environmentName
+    displayName: Environment name
+    type: string
+    default: production
+  - name: commitSnapshots
+    displayName: Commit changed state to Git
+    type: boolean
+    default: false
+  - name: failOnUnrecordedChanges
+    displayName: Fail when a changed object has no active record
+    type: boolean
+    default: false
+
+variables:
+  azureServiceConnection: REPLACE-WITH-WORKLOAD-IDENTITY-SERVICE-CONNECTION
+  snapshotBranch: main
+  frameworkRoot: $(Build.SourcesDirectory)/intune-change-tracking
+  stagingRoot: $(Agent.TempDirectory)/intune-state/${{ parameters.environmentName }}
+  reportRoot: $(Build.ArtifactStagingDirectory)/intune-diff
+
+pool:
+  vmImage: ubuntu-latest
+
+steps:
+  - checkout: self
+    clean: true
+    fetchDepth: 0
+    persistCredentials: true
+
+  - pwsh: |
+      & "$(frameworkRoot)/scripts/Test-Framework.ps1"
+    displayName: Validate framework
+
+  - task: AzureCLI@2
+    displayName: Export and compare Intune state
+    inputs:
+      azureSubscription: $(azureServiceConnection)
+      scriptType: pscore
+      scriptLocation: inlineScript
+      inlineScript: |
+        $ErrorActionPreference = 'Stop'
+        New-Item -ItemType Directory -Force -Path "$(stagingRoot)", "$(reportRoot)" | Out-Null
+
+        $env:GRAPH_ACCESS_TOKEN = az account get-access-token `
+          --resource-type ms-graph `
+          --query accessToken `
+          --output tsv
+        if ([string]::IsNullOrWhiteSpace($env:GRAPH_ACCESS_TOKEN)) {
+          throw 'Azure CLI did not return a Microsoft Graph access token.'
+        }
+
+        & "$(frameworkRoot)/scripts/Export-IntuneState.ps1" `
+          -EnvironmentName '${{ parameters.environmentName }}' `
+          -OutputPath "$(stagingRoot)"
+
+        $auditPath = Join-Path "$(reportRoot)" 'audit-events.json'
+        & "$(frameworkRoot)/scripts/Export-IntuneAudit.ps1" `
+          -SinceUtc ([DateTime]::UtcNow.AddDays(-2)) `
+          -OutputPath $auditPath
+
+        $baseline = Join-Path "$(frameworkRoot)/state" '${{ parameters.environmentName }}'
+        $compare = @{
+          BaselinePath = $baseline
+          CurrentPath = "$(stagingRoot)"
+          OutputPath = "$(reportRoot)"
+          AuditPath = $auditPath
+          ChangeRecordsPath = "$(frameworkRoot)/changes"
+          EnvironmentName = '${{ parameters.environmentName }}'
+        }
+        if ('${{ parameters.failOnUnrecordedChanges }}' -eq 'True') {
+          $compare.FailOnUndocumentedChanges = $true
+        }
+        & "$(frameworkRoot)/scripts/Compare-IntuneState.ps1" @compare
+
+        & "$(frameworkRoot)/scripts/Sync-IntuneState.ps1" `
+          -SourcePath "$(stagingRoot)" `
+          -DestinationPath $baseline
+
+        $changes = git status --porcelain -- "intune-change-tracking/state/${{ parameters.environmentName }}"
+        $hasChanges = -not [string]::IsNullOrWhiteSpace(($changes -join "`n"))
+        Write-Host "##vso[task.setvariable variable=hasSnapshotChanges]$($hasChanges.ToString().ToLowerInvariant())"
+        Remove-Item Env:GRAPH_ACCESS_TOKEN -ErrorAction SilentlyContinue
+
+  - publish: $(reportRoot)
+    artifact: intune-diff-${{ parameters.environmentName }}
+    displayName: Publish Intune diff report
+    condition: always()
+
+  - pwsh: |
+      $ErrorActionPreference = 'Stop'
+      git config user.name 'Intune Snapshot Bot'
+      git config user.email 'intune-snapshot@local.invalid'
+      git add -- "intune-change-tracking/state/${{ parameters.environmentName }}"
+      git commit -m "snapshot(intune): ${{ parameters.environmentName }} $(Get-Date -Format yyyy-MM-dd)"
+      git push origin "HEAD:$(snapshotBranch)"
+    displayName: Commit snapshot
+    condition: and(succeeded(), eq(variables['hasSnapshotChanges'], 'true'), ${{ eq(parameters.commitSnapshots, true) }})

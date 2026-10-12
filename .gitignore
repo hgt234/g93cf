@@ -1,0 +1,39 @@
+# --- Local AI assistant guidance and settings (never committed) ---
+CLAUDE.md
+CLAUDE.local.md
+.claude/
+
+# --- Secrets and credentials ---
+.env
+.env.*
+*.env
+*.pfx
+*.p12
+*.pem
+*.key
+*.snk
+*.publishsettings
+*.secret
+*.secrets
+*secrets*.json
+*credential*.json
+*.kdbx
+# Local pipeline variable files; only the *.example.yml templates are tracked.
+*.variables.yml
+!*.variables.example.yml
+
+# --- Tenant data exported by scripts (device names, UPNs, object IDs) ---
+exports/
+*.csv
+!CISWindowsEndpointAssessment/Vendor/**/*.csv
+EucPilotProgramOutput/
+*.intunewin
+# AzureVirtualDesktopPoc script reports (contain tenant/subscription IDs)
+AzureVirtualDesktopPoc/avd-*.json
+AzureVirtualDesktopPoc/hybrid-readiness.json
+AzureVirtualDesktopPoc/servicenow-avd-configuration.json
+
+# --- Logs, transcripts, scratch ---
+*.log
+*transcript*.txt
+.tmp/

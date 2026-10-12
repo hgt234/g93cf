@@ -1,0 +1,26 @@
+# Create an Azure DevOps variable group named avd-poc-hybrid.
+# Infrastructure values are controlled here and are never ServiceNow inputs.
+# Mark AVD_HYBRID_PPKG_SAS_URI secret and refresh it with a short-lived read-only SAS before onboarding.
+variables:
+  AVD_HYBRID_POC_ID: POC01
+  AVD_HYBRID_SUBSCRIPTION_ID: 00000000-0000-0000-0000-000000000000
+  AVD_HYBRID_TENANT_ID: 00000000-0000-0000-0000-000000000000
+  AVD_HYBRID_LOCATION: centralus
+  AVD_HYBRID_RESOURCE_GROUP: rg-avd-hybrid-poc01
+  AVD_HYBRID_HOST_POOL_NAME: vdpool-avd-hybrid-poc01
+  AVD_HYBRID_DESKTOP_APP_GROUP_NAME: vdag-avd-hybrid-poc01
+  AVD_HYBRID_EXISTING_WORKSPACE_RESOURCE_GROUP: rg-avd-poc01
+  AVD_HYBRID_EXISTING_WORKSPACE_NAME: vdws-avd-poc01
+  AVD_HYBRID_EXPECTED_GPU_VENDOR: Intel
+  AVD_HYBRID_REQUIRED_APP_NAMES_JSON: '["Microsoft 365 Apps for enterprise - en-us"]'
+  AVD_HYBRID_REQUIRE_INTUNE_COMPLIANT: 'true'
+  AVD_HYBRID_REQUIRE_MDE: 'true'
+  AVD_HYBRID_READINESS_TIMEOUT_MINUTES: '100'
+  AVD_HYBRID_PPKG_CREATED_UTC: '2026-09-01T00:00:00Z'
+  AVD_HYBRID_PPKG_EXPIRES_UTC: '2027-02-28T00:00:00Z'
+  AVD_HYBRID_PPKG_MINIMUM_VALIDITY_DAYS: '30'
+  AVD_HYBRID_PPKG_SHA256: replace-with-64-character-sha256
+  AVD_HYBRID_PPKG_SAS_URI: replace-with-short-lived-read-only-sas-and-mark-secret
+  AVD_HYBRID_DEPLOYMENT_SERVICE_CONNECTION: sc-avd-hybrid-deploy
+  AVD_HYBRID_READINESS_SERVICE_CONNECTION: sc-avd-hybrid-readiness
+  AVD_HYBRID_ASSIGNMENT_SERVICE_CONNECTION: sc-avd-hybrid-assignment

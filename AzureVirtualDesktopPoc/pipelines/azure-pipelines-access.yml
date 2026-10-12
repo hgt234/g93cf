@@ -1,0 +1,92 @@
+trigger: none
+pr: none
+
+parameters:
+  - name: privilegedBootstrapServiceConnection
+    type: string
+  - name: subscriptionId
+    type: string
+  - name: location
+    type: string
+    default: centralus
+  - name: pocId
+    type: string
+    default: POC01
+  - name: resourceGroupName
+    type: string
+    default: rg-avd-poc01
+  - name: deploymentPrincipalId
+    type: string
+  - name: readinessPrincipalId
+    type: string
+  - name: assignmentPrincipalId
+    type: string
+
+stages:
+  - stage: Access
+    displayName: Create POC-scoped no-delete roles
+    jobs:
+      - deployment: AdditiveAccessBootstrap
+        environment: avd-poc-access-bootstrap
+        pool:
+          vmImage: windows-latest
+        strategy:
+          runOnce:
+            deploy:
+              steps:
+                - checkout: self
+                - task: AzureCLI@2
+                  displayName: What-if and deploy access roles
+                  env:
+                    SUBSCRIPTION_ID: ${{ parameters.subscriptionId }}
+                    LOCATION: ${{ parameters.location }}
+                    POC_ID: ${{ parameters.pocId }}
+                    RESOURCE_GROUP: ${{ parameters.resourceGroupName }}
+                    DEPLOYMENT_PRINCIPAL_ID: ${{ parameters.deploymentPrincipalId }}
+                    READINESS_PRINCIPAL_ID: ${{ parameters.readinessPrincipalId }}
+                    ASSIGNMENT_PRINCIPAL_ID: ${{ parameters.assignmentPrincipalId }}
+                  inputs:
+                    azureSubscription: ${{ parameters.privilegedBootstrapServiceConnection }}
+                    scriptType: pscore
+                    scriptLocation: inlineScript
+                    inlineScript: |
+                      $ErrorActionPreference = 'Stop'
+                      New-Item -ItemType Directory -Path '$(Build.ArtifactStagingDirectory)/avd-access' -Force | Out-Null
+                      $common = @(
+                        "pocId=$env:POC_ID"
+                        "resourceGroupName=$env:RESOURCE_GROUP"
+                        "deploymentPrincipalId=$env:DEPLOYMENT_PRINCIPAL_ID"
+                        "readinessPrincipalId=$env:READINESS_PRINCIPAL_ID"
+                        "assignmentPrincipalId=$env:ASSIGNMENT_PRINCIPAL_ID"
+                      )
+                      $whatIf = az deployment sub what-if `
+                        --name "avd-access-whatif-$(Build.BuildId)" `
+                        --location $env:LOCATION `
+                        --subscription $env:SUBSCRIPTION_ID `
+                        --template-file 'AzureVirtualDesktopPoc/infra/access.bicep' `
+                        --parameters @common `
+                        --result-format FullResourcePayloads `
+                        --no-pretty-print `
+                        --output json `
+                        --only-show-errors
+                      if ($LASTEXITCODE -ne 0) { throw 'Access what-if failed.' }
+                      $whatIfText = $whatIf -join [Environment]::NewLine
+                      $whatIfText | Set-Content '$(Build.ArtifactStagingDirectory)/avd-access/what-if.json' -Encoding utf8
+                      $whatIfResult = $whatIfText | ConvertFrom-Json -Depth 100
+                      if (@($whatIfResult.changes | Where-Object changeType -In @('Delete', 'Recreate')).Count -gt 0) {
+                        throw 'Access what-if contains a delete or recreate operation.'
+                      }
+                      az deployment sub create `
+                        --name "avd-access-$(Build.BuildId)" `
+                        --location $env:LOCATION `
+                        --subscription $env:SUBSCRIPTION_ID `
+                        --template-file 'AzureVirtualDesktopPoc/infra/access.bicep' `
+                        --parameters @common `
+                        --output none `
+                        --only-show-errors
+                      if ($LASTEXITCODE -ne 0) { throw 'Access bootstrap deployment failed.' }
+                - task: PublishPipelineArtifact@1
+                  condition: always()
+                  inputs:
+                    targetPath: $(Build.ArtifactStagingDirectory)/avd-access
+                    artifact: avd-poc-access-what-if

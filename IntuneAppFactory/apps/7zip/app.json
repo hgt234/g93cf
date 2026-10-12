@@ -1,0 +1,23 @@
+{
+  "schemaVersion": 1,
+  "id": "7zip",
+  "displayName": "7-Zip",
+  "publisher": "Igor Pavlov",
+  "classification": "baseline",
+  "lifecycle": {
+    "strategy": "enterpriseCatalogAutoUpdate",
+    "updateAuthority": "intuneEnterpriseCatalog",
+    "catalogProductName": "7-Zip",
+    "catalogPackageSelection": "x64 stable",
+    "autoUpdate": true
+  },
+  "assignment": {
+    "intent": "required",
+    "target": "allDevices",
+    "notifications": "hideAll"
+  },
+  "installContext": "catalogDefault",
+  "owner": "Endpoint Engineering",
+  "notes": "Catalog-native baseline example. No PSADT wrapper; Intune owns package updates."
+}
+
