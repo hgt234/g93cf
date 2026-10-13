@@ -2,6 +2,10 @@
 CLAUDE.md
 CLAUDE.local.md
 .claude/
+# Local editor settings
+.vscode/
+# Local design notes
+EndpointExplorer/PLAN.md
 
 # --- Secrets and credentials ---
 .env
