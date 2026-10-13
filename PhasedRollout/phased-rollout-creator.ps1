@@ -567,6 +567,15 @@ function Get-PilotDetectedApp {
     return $matched.ToArray()
 }
 
+function ConvertTo-PilotCsvSafe {
+    # Spreadsheet formula injection (OWASP "CSV Injection"): text that starts
+    # with = + - @ tab or CR gets a leading single quote so Excel shows it as
+    # text. Kept identical to EndpointExplorer's rollout export.
+    param($Value)
+    if ($Value -is [string] -and $Value -match '^[=+\-@\t\r]') { return "'" + $Value }
+    return $Value
+}
+
 function ConvertTo-PilotTimestamp {
     # Graph timestamps may arrive as ISO strings or, after PowerShell 7's
     # ConvertFrom-Json, as DateTime. Missing or year-1 values ("never") -> MinValue.
@@ -841,7 +850,12 @@ if ($PSCmdlet.ShouldProcess($ExportDirectory, 'Export phased device detail, per-
     if (-not (Test-Path -LiteralPath $ExportDirectory -PathType Container)) {
         New-Item -Path $ExportDirectory -ItemType Directory -Force | Out-Null
     }
-    if ($exportRows.Count -gt 0) { $exportRows | Select-Object $detailColumns | Export-Csv -LiteralPath $detailPath -NoTypeInformation -Encoding UTF8 }
+    if ($exportRows.Count -gt 0) {
+        $exportRows | Select-Object $detailColumns | ForEach-Object {
+            foreach ($property in $_.PSObject.Properties) { $property.Value = ConvertTo-PilotCsvSafe $property.Value }
+            $_
+        } | Export-Csv -LiteralPath $detailPath -NoTypeInformation -Encoding UTF8
+    }
     else { ($detailColumns | ForEach-Object { '"{0}"' -f $_ }) -join ',' | Set-Content -LiteralPath $detailPath -Encoding UTF8 }
     Write-Information "Detail CSV: $detailPath" -InformationAction Continue
     for ($phase = 1; $phase -le $PhasePercentages.Count; $phase++) {

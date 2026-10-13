@@ -83,6 +83,12 @@ are never exported. Each device appears once. Devices without a primary user
 (shared or kiosk) are exported with a blank UPN and a warning; add
 `-RequirePrimaryUser` to skip them.
 
+In the detail CSV, any text value that starts with `=`, `+`, `-`, `@`, a tab,
+or a carriage return gets a leading `'`. This stops Excel from running a device
+name or UPN as a formula. The group-import CSVs contain only object IDs and are
+unaffected. EndpointExplorer's rollout export applies the same rule, so its
+files stay identical to this script's.
+
 ## Phases
 
 The script resolves devices and Intune primary-user UPNs, sorts canonical
