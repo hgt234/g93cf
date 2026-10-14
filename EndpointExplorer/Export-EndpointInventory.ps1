@@ -52,6 +52,13 @@ snapshot is missing or invalid. Cannot be combined with -Refresh.
 Devices whose last Intune check-in is older than this are Stale. 0 disables
 the threshold. Defaults to 30. Applied when rendering, including from cache.
 
+.PARAMETER AppInventoryPath
+Intune "Discovered apps" raw-data export (AppInvRawData) as .zip or .csv, from
+Apps > Monitor > Discovered apps > Export in the Intune admin center, or from
+Export-EndpointAppInventoryReport.ps1. Supplies per-device apps without any
+Graph calls (replaces the slow -IncludeDeviceApps lookups) and is applied to a
+fresh or cached snapshot; the updated snapshot is saved.
+
 .PARAMETER ExportCsv
 Also writes EndpointDevices.csv, EndpointApps.csv, and (when per-device apps
 are present) EndpointDeviceApps.csv.
@@ -70,6 +77,10 @@ Performs all Graph reads and prints counts and file paths, but writes nothing.
 .EXAMPLE
 .\Export-EndpointInventory.ps1 -IncludeDeviceApps -Refresh -ExportCsv
 Forces a full pull including per-device apps and writes CSVs as well.
+
+.EXAMPLE
+.\Export-EndpointInventory.ps1 -AppInventoryPath C:\Temp\AppInvRawData.zip
+Adds per-device apps from a Discovered apps export, with no per-app Graph lookups.
 
 .EXAMPLE
 .\Export-EndpointInventory.ps1 -FromCache -ActiveWithinDays 14
@@ -91,6 +102,8 @@ param(
     [switch] $Refresh,
     [switch] $FromCache,
     [ValidateRange(0, 3650)] [int] $ActiveWithinDays = 30,
+    [ValidateScript({ Test-Path -LiteralPath $_ -PathType Leaf })]
+    [string] $AppInventoryPath,
     [switch] $ExportCsv,
     [switch] $PassThru
 )

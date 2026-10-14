@@ -17,6 +17,10 @@ Graph surface (v1.0, GET only; see README.md 'Read-only boundary'):
                  (Device.Read.All; supplies the device object id that Entra group
                  bulk import needs, so the report can build rollout exports offline)
   JSON batching: max 20 requests; each subrequest is throttled individually.
+  Export jobs    https://learn.microsoft.com/en-us/graph/api/intune-reporting-devicemanagementexportjob-create?view=graph-rest-1.0
+                 Used ONLY by Export-EndpointAppInventoryReport.ps1 (needs a ReadWrite
+                 scope); the inventory export never enables it. Report columns:
+                 https://learn.microsoft.com/en-us/mem/intune/fundamentals/reports-export-graph-available-reports
 #>
 
 Set-StrictMode -Version 3.0
@@ -40,7 +44,9 @@ $script:EndpointDeviceFields = @('intuneDeviceId', 'deviceName', 'userPrincipalN
 $script:EndpointAppIdPattern = '(?!\.{1,2}(?:/|\?|$))[0-9A-Za-z_.%=+-]+'
 
 function Initialize-EndpointGraphState {
-    $script:EndpointGraphState = @{ Session = $null; CallCount = 0; BatchSubrequestCount = 0 }
+    # AllowAppInventoryExport is set only by Export-EndpointAppInventoryReport.ps1.
+    # BatchPauseMs paces $batch calls after throttling (adaptive, whole run).
+    $script:EndpointGraphState = @{ Session = $null; CallCount = 0; BatchSubrequestCount = 0; AllowAppInventoryExport = $false; BatchPauseMs = 0 }
 }
 Initialize-EndpointGraphState
 
@@ -151,6 +157,15 @@ function Assert-EndpointReadRequest {
             }
         }
         return
+    }
+    # Opt-in for Export-EndpointAppInventoryReport.ps1 only: create one
+    # AppInvRawData export job (no filter or snapshot) and read its status.
+    if ($script:EndpointGraphState.AllowAppInventoryExport) {
+        if ($Method -eq 'Post' -and $Uri -eq "$script:EndpointGraphBase/deviceManagement/reports/exportJobs" -and
+            [string](Get-EndpointProperty $Body 'reportName') -eq 'AppInvRawData' -and
+            $null -eq (Get-EndpointProperty $Body 'filter') -and $null -eq (Get-EndpointProperty $Body 'snapshotId')) { return }
+        if ($Method -eq 'Get' -and $null -eq $Body -and
+            $Uri -match '^https://graph\.microsoft\.com/v1\.0/deviceManagement/reports/exportJobs/AppInvRawData_[0-9A-Za-z-]+$') { return }
     }
     throw "Read-only Graph boundary rejected $Method $Uri"
 }
@@ -286,6 +301,9 @@ function Invoke-EndpointGraphBatch {
         $pending = @($Requests[$offset..$last])
         $authRefreshed = $false
         for ($attempt = 1; $pending.Count -gt 0; $attempt++) {
+            # After throttling, every following batch waits too, so the run
+            # slows to what the service accepts instead of hammering it.
+            if ($script:EndpointGraphState.BatchPauseMs -gt 0) { Start-Sleep -Milliseconds $script:EndpointGraphState.BatchPauseMs }
             $script:EndpointGraphState.BatchSubrequestCount += $pending.Count
             $response = Invoke-EndpointGraph -Method Post -Uri '/$batch' -Body @{ requests = $pending }
             $responses = Get-EndpointProperty $response 'responses'
@@ -324,6 +342,13 @@ function Invoke-EndpointGraphBatch {
             if ($refreshAuth) {
                 $script:EndpointGraphState.Session = Connect-EndpointGraph
                 $authRefreshed = $true
+            }
+            if ($throttled) {
+                $script:EndpointGraphState.BatchPauseMs = [int][Math]::Min(30000, [Math]::Max(1000, 2 * $script:EndpointGraphState.BatchPauseMs))
+            }
+            elseif ($script:EndpointGraphState.BatchPauseMs -gt 0) {
+                $half = [int]($script:EndpointGraphState.BatchPauseMs / 2)
+                $script:EndpointGraphState.BatchPauseMs = if ($half -lt 250) { 0 } else { $half }
             }
             # A retry caused only by a refreshed managed-identity token needs no wait.
             if ($throttled) {
@@ -555,7 +580,8 @@ function Get-EndpointEntraDeviceIndex {
 function Get-EndpointDeviceAppMap {
     # Resolves detectedApps/{id}/managedDevices for every app record through
     # $batch. Returns intuneDeviceId -> sorted record indexes. A 404 (app record
-    # removed mid-run) is tolerated and counted; any other failure throws.
+    # removed mid-run) is tolerated and counted; a record still throttled after
+    # the bounded retries is counted as unresolved; any other failure throws.
     param(
         [Parameter(Mandatory)] [AllowEmptyCollection()] [object[]] $AppRecords,
         [Parameter(Mandatory)] [AllowEmptyCollection()] [string[]] $DeviceIds
@@ -568,10 +594,12 @@ function Get-EndpointDeviceAppMap {
     $results = Invoke-EndpointGraphBatch -Requests $requests -Activity 'Resolving installed apps per device'
     $map = @{}
     $missingApps = 0
+    $unresolved = 0
     $outOfScope = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::OrdinalIgnoreCase)
     for ($i = 0; $i -lt $AppRecords.Count; $i++) {
         $result = $results[[string]$i]
         if ($result.Status -eq 404) { $missingApps++; continue }
+        if ($script:EndpointRetryableStatusCodes -contains $result.Status) { $unresolved++; continue }
         if ($result.Status -ne 200) { throw "Device lookup for detected app '$($AppRecords[$i].name)' failed with HTTP $($result.Status)." }
         $nextLink = [string](Get-EndpointProperty $result.Body '@odata.nextLink')
         $devices = if ($nextLink) { @(Get-EndpointGraphPage -FirstPage $result.Body -Uri $nextLink) } else { @(Get-EndpointProperty $result.Body 'value') }
@@ -583,7 +611,7 @@ function Get-EndpointDeviceAppMap {
             $map[$deviceId].Add($i)
         }
     }
-    return [pscustomobject]@{ Map = $map; MissingApps = $missingApps; OutOfScopeDevices = $outOfScope.Count }
+    return [pscustomobject]@{ Map = $map; MissingApps = $missingApps; Unresolved = $unresolved; OutOfScopeDevices = $outOfScope.Count }
 }
 
 #endregion
@@ -680,10 +708,16 @@ function Get-EndpointInventorySnapshot {
     if ($IncludeDeviceApps) {
         $batchCount = [Math]::Ceiling($appRecords.Count / 20)
         Write-Information "Resolving devices per app record ($($appRecords.Count) lookups in about $batchCount batch call(s))..." -InformationAction Continue
+        if ($appRecords.Count -gt 1000) {
+            Write-Warning "Intune throttles per-app device lookups heavily; $($appRecords.Count) lookups can take a long time. -AppInventoryPath with a Discovered apps export avoids them."
+        }
         $resolution = Get-EndpointDeviceAppMap -AppRecords $appRecords -DeviceIds @($devices | ForEach-Object { $_.intuneDeviceId })
         $map = $resolution.Map
         if ($resolution.MissingApps -gt 0) {
             $warnings.Add("$($resolution.MissingApps) detected app record(s) disappeared during the run (HTTP 404) and have no device mapping.")
+        }
+        if ($resolution.Unresolved -gt 0) {
+            $warnings.Add("$($resolution.Unresolved) detected app record(s) were still throttled after retries; their devices are missing from per-device data. Use -AppInventoryPath with a Discovered apps export instead.")
         }
         if ($resolution.OutOfScopeDevices -gt 0) {
             $warnings.Add("$($resolution.OutOfScopeDevices) device(s) reported by app inventory are outside this snapshot's device scope and were ignored.")
@@ -791,6 +825,275 @@ function Get-EndpointCacheMismatch {
     }
     if ($IncludeDeviceApps -and -not $Snapshot.source.includeDeviceApps) { return 'cached snapshot has no per-device apps' }
     return ''
+}
+
+#endregion
+
+#region App inventory file (Intune "Discovered apps" raw export)
+
+function Read-EndpointAppInventoryFile {
+    # Streams an AppInvRawData export (.csv, or a .zip holding one .csv) and
+    # keeps only the columns needed. Header names are matched without case,
+    # spaces, or punctuation ('DeviceID', 'Device ID', 'Application key'). The
+    # aggregate export (no DeviceId) is rejected with the columns found.
+    # -WindowsOnly drops other platforms while reading: the export covers every
+    # platform, and OSDescription is 'Windows' for Windows rows (Platform is
+    # used only if OSDescription is absent).
+    param([Parameter(Mandatory)] [string] $Path, [switch] $WindowsOnly)
+    Add-Type -AssemblyName Microsoft.VisualBasic
+    $zip = $null
+    $stream = $null
+    $parser = $null
+    try {
+        if ($Path -match '\.zip$') {
+            Add-Type -AssemblyName System.IO.Compression
+            Add-Type -AssemblyName System.IO.Compression.FileSystem
+            $zip = [System.IO.Compression.ZipFile]::OpenRead($Path)
+            $entries = @($zip.Entries | Where-Object { $_.FullName -match '\.csv$' })
+            if ($entries.Count -ne 1) { throw "Expected exactly one .csv inside '$Path'; found $($entries.Count)." }
+            $stream = $entries[0].Open()
+            $fileTime = [DateTimeOffset]$entries[0].LastWriteTime
+        }
+        else {
+            $stream = [System.IO.File]::OpenRead($Path)
+            $fileTime = [DateTimeOffset](Get-Item -LiteralPath $Path).LastWriteTimeUtc
+        }
+        $parser = New-Object Microsoft.VisualBasic.FileIO.TextFieldParser($stream, [System.Text.Encoding]::UTF8, $true)
+        $parser.TextFieldType = [Microsoft.VisualBasic.FileIO.FieldType]::Delimited
+        $parser.SetDelimiters(',')
+        $parser.HasFieldsEnclosedInQuotes = $true
+        $header = $parser.ReadFields()
+        if ($null -eq $header) { throw "App inventory file '$Path' is empty." }
+        $columns = @{}
+        for ($i = 0; $i -lt $header.Count; $i++) {
+            $key = ($header[$i].ToLowerInvariant() -replace '[^a-z0-9]', '')
+            if (-not $columns.ContainsKey($key)) { $columns[$key] = $i }
+        }
+        foreach ($required in @('deviceid', 'applicationname', 'applicationversion')) {
+            if (-not $columns.ContainsKey($required)) {
+                throw ("App inventory file '{0}' has no '{1}' column. Use the Discovered apps raw-data export (AppInvRawData), not the aggregate one. Columns found: {2}" -f $Path, $required, ($header -join ', '))
+            }
+        }
+        # Each row is a string[]: 0 DeviceId, 1 Name, 2 Version, 3 ShortVersion,
+        # 4 Publisher, 5 Platform (missing optional columns are ''). Plain
+        # arrays keep a 450,000-row export fast and small.
+        $source = @(foreach ($name in @('deviceid', 'applicationname', 'applicationversion', 'applicationshortversion', 'applicationpublisher', 'platform')) {
+                if ($columns.ContainsKey($name)) { $columns[$name] } else { -1 }
+            })
+        $osColumn = ''
+        $osIndex = -1
+        if ($WindowsOnly) {
+            foreach ($name in @('osdescription', 'platform')) {
+                if ($columns.ContainsKey($name)) { $osIndex = $columns[$name]; $osColumn = $header[$osIndex]; break }
+            }
+            if ($osIndex -lt 0) { throw "App inventory file '$Path' has neither an OSDescription nor a Platform column, so Windows rows cannot be selected. Use -AllPlatforms to import every row." }
+        }
+        $skipped = 0
+        $rows = New-Object 'System.Collections.Generic.List[string[]]'
+        while (-not $parser.EndOfData) {
+            $fields = $parser.ReadFields()
+            if ($null -eq $fields -or $fields.Length -eq 0) { continue }
+            if ($osIndex -ge 0 -and ($osIndex -ge $fields.Length -or $fields[$osIndex] -ne 'Windows')) { $skipped++; continue }
+            $row = New-Object 'string[]' 6
+            for ($c = 0; $c -lt 6; $c++) {
+                $i = $source[$c]
+                $row[$c] = if ($i -ge 0 -and $i -lt $fields.Length) { $fields[$i] } else { '' }
+            }
+            $rows.Add($row)
+        }
+        if ($WindowsOnly -and $rows.Count -eq 0 -and $skipped -gt 0) {
+            throw "App inventory file '$Path' has $skipped row(s) but none with $osColumn = Windows."
+        }
+        return [pscustomobject]@{ Rows = $rows.ToArray(); FileTime = $fileTime; Name = [System.IO.Path]::GetFileName($Path); NonWindowsRows = $skipped }
+    }
+    finally {
+        if ($null -ne $parser) { $parser.Close() }
+        if ($null -ne $stream) { $stream.Dispose() }
+        if ($null -ne $zip) { $zip.Dispose() }
+    }
+}
+
+function Import-EndpointAppInventory {
+    # Replaces the snapshot's per-device app data with an AppInvRawData export:
+    # no Graph calls. Rows match detected-app records by name + version
+    # (ApplicationVersion, then ApplicationShortVersion), case-insensitive;
+    # rows with no record add one. Whether DeviceId holds Intune or Entra device
+    # IDs is decided by which matches more snapshot devices.
+    param([Parameter(Mandatory)] $Snapshot, [Parameter(Mandatory)] [string] $Path)
+    $file = Read-EndpointAppInventoryFile -Path $Path -WindowsOnly:([bool]$Snapshot.source.windowsOnly)
+    $devices = @($Snapshot.devices)
+    $byIntune = @{}
+    $byEntra = @{}
+    foreach ($device in $devices) {
+        $byIntune[([string]$device.intuneDeviceId).ToLowerInvariant()] = $device
+        $key = ConvertTo-EndpointEntraKey $device.azureADDeviceId
+        if ($key) {
+            if (-not $byEntra.ContainsKey($key)) { $byEntra[$key] = New-Object 'System.Collections.Generic.List[object]' }
+            $byEntra[$key].Add($device)
+        }
+    }
+    $distinct = @{}
+    foreach ($row in $file.Rows) { $distinct[$row[0].ToLowerInvariant()] = $true }
+    $intuneHits = @($distinct.Keys | Where-Object { $byIntune.ContainsKey($_) }).Count
+    $entraHits = @($distinct.Keys | Where-Object { $k = ConvertTo-EndpointEntraKey $_; $k -and $byEntra.ContainsKey($k) }).Count
+    if ($file.Rows.Count -gt 0 -and $intuneHits -eq 0 -and $entraHits -eq 0) {
+        throw "None of the $($distinct.Count) device IDs in '$($file.Name)' match this snapshot's devices. Is the export from the same tenant and scope?"
+    }
+    $useEntra = $entraHits -gt $intuneHits
+
+    $records = New-Object 'System.Collections.Generic.List[object]'
+    foreach ($record in @($Snapshot.appRecords)) { $records.Add($record) }
+    $recordIndex = @{}
+    for ($i = 0; $i -lt $records.Count; $i++) {
+        $key = ('{0}|{1}' -f $records[$i].name, $records[$i].version).ToLowerInvariant()
+        if (-not $recordIndex.ContainsKey($key)) { $recordIndex[$key] = New-Object 'System.Collections.Generic.List[int]' }
+        $recordIndex[$key].Add($i)
+    }
+    $map = @{}
+    $outOfScope = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::OrdinalIgnoreCase)
+    $added = 0
+    $matchedRows = 0
+    $entraKeys = @{}
+    foreach ($row in $file.Rows) {
+        $deviceKey = $row[0].ToLowerInvariant()
+        $targets = $null
+        if ($useEntra) {
+            if (-not $entraKeys.ContainsKey($deviceKey)) { $entraKeys[$deviceKey] = ConvertTo-EndpointEntraKey $row[0] }
+            $k = $entraKeys[$deviceKey]
+            if ($k -and $byEntra.ContainsKey($k)) { $targets = $byEntra[$k] }
+        }
+        elseif ($byIntune.ContainsKey($deviceKey)) { $targets = @($byIntune[$deviceKey]) }
+        if ($null -eq $targets) { if ($row[0]) { [void]$outOfScope.Add($row[0]) }; continue }
+        $name = $row[1].ToLowerInvariant()
+        $candidates = $null
+        if ($row[2] -and $recordIndex.ContainsKey($name + '|' + $row[2].ToLowerInvariant())) { $candidates = $recordIndex[$name + '|' + $row[2].ToLowerInvariant()] }
+        elseif ($row[3] -and $recordIndex.ContainsKey($name + '|' + $row[3].ToLowerInvariant())) { $candidates = $recordIndex[$name + '|' + $row[3].ToLowerInvariant()] }
+        if ($null -eq $candidates) {
+            # Present in the export but not in Graph's list (taken at a different time).
+            $platform = if ([string]$targets[0].operatingSystem -eq 'Windows') { 'windows' } else { $row[5] }
+            $records.Add([pscustomobject][ordered]@{
+                    id = ''; name = $row[1]; version = $row[2]; publisher = $row[4]; platform = $platform; deviceCount = 0; sizeInByte = [long]0
+                })
+            $candidates = New-Object 'System.Collections.Generic.List[int]'
+            $candidates.Add($records.Count - 1)
+            $recordIndex[$name + '|' + $row[2].ToLowerInvariant()] = $candidates
+            $added++
+        }
+        $matchedRows++
+        foreach ($device in $targets) {
+            # Same name and version on several platforms: prefer the device's own.
+            $chosen = $candidates[0]
+            if ($candidates.Count -gt 1 -and [string]$device.operatingSystem -eq 'Windows') {
+                foreach ($c in $candidates) { if ($records[$c].platform -eq 'windows') { $chosen = $c; break } }
+            }
+            $id = [string]$device.intuneDeviceId
+            if (-not $map.ContainsKey($id)) { $map[$id] = New-Object 'System.Collections.Generic.HashSet[int]' }
+            [void]$map[$id].Add($chosen)
+        }
+    }
+    $lists = @{}
+    foreach ($device in $devices) {
+        $id = [string]$device.intuneDeviceId
+        if ($map.ContainsKey($id)) {
+            $sorted = @($map[$id] | Sort-Object)
+            $device.appRecordIndexes = $sorted
+            $list = New-Object 'System.Collections.Generic.List[int]'
+            foreach ($index in $sorted) { $list.Add([int]$index) }
+            $lists[$id] = $list
+        }
+        else { $device.appRecordIndexes = @() }
+    }
+    # Records added from the file have no Intune count; count the file's devices.
+    $firstAdded = $records.Count - $added
+    foreach ($id in $lists.Keys) { foreach ($index in $lists[$id]) { if ($index -ge $firstAdded) { $records[$index].deviceCount++ } } }
+
+    $Snapshot.appRecords = @($records.ToArray())
+    $Snapshot.apps = @(ConvertTo-EndpointAppSummary -AppRecords $Snapshot.appRecords -DeviceAppMap $lists)
+    $Snapshot.source.includeDeviceApps = $true
+    $info = [pscustomobject][ordered]@{
+        file = $file.Name
+        fileTime = Format-EndpointTimestamp $file.FileTime
+        rows = $file.Rows.Count
+        nonWindowsRows = $file.NonWindowsRows
+        matchedRows = $matchedRows
+        deviceIdType = if ($useEntra) { 'Entra device ID' } else { 'Intune device ID' }
+        addedRecords = $added
+        outOfScopeDevices = $outOfScope.Count
+    }
+    $Snapshot.source | Add-Member -NotePropertyName appInventory -NotePropertyValue $info -Force
+    $prefix = 'App inventory import: '
+    $warnings = New-Object 'System.Collections.Generic.List[string]'
+    foreach ($w in @($Snapshot.warnings)) { if (-not ([string]$w).StartsWith($prefix)) { $warnings.Add([string]$w) } }
+    $skippedText = if ($file.NonWindowsRows -gt 0) { " ($($file.NonWindowsRows) non-Windows rows skipped)" } else { '' }
+    $warnings.Add($prefix + ('{0} (file time {1}) mapped {2} of {3} Windows rows{4} to {5} device(s) by {6}.' -f $info.file, $info.fileTime, $matchedRows, $info.rows, $skippedText, $lists.Count, $info.deviceIdType))
+    if ($added -gt 0) { $warnings.Add($prefix + "$added app name/version(s) are in the export but not in Graph's detected apps; added from the export.") }
+    if ($outOfScope.Count -gt 0) { $warnings.Add($prefix + "$($outOfScope.Count) device(s) in the export are outside this snapshot's device scope and were ignored.") }
+    $age = (ConvertTo-EndpointTimestamp $Snapshot.generatedAt) - $file.FileTime
+    if ([Math]::Abs($age.TotalDays) -gt 7) { $warnings.Add($prefix + ('the export and the snapshot are {0:N0} days apart; per-device apps may not match current devices.' -f [Math]::Abs($age.TotalDays))) }
+    $Snapshot.warnings = @($warnings.ToArray())
+    return $info
+}
+
+function Save-EndpointExportDownload {
+    # Downloads a finished export from its temporary blob URL. The URL carries
+    # its own SAS token: no Graph token is sent, and the URL is never logged.
+    param([Parameter(Mandatory)] [string] $Url, [Parameter(Mandatory)] [string] $Path)
+    if ($Url -notmatch '^https://[a-z0-9]+\.blob\.core\.windows\.net/') { throw 'Export download URL is not an Azure Blob Storage HTTPS URL; refusing to download.' }
+    Invoke-WebRequest -Uri $Url -OutFile $Path -UseBasicParsing
+}
+
+function Invoke-EndpointAppInventoryExport {
+    <#
+    .SYNOPSIS
+    Implements Export-EndpointAppInventoryReport.ps1. See that script for full help.
+    #>
+    [CmdletBinding(SupportsShouldProcess, ConfirmImpact = 'Medium')]
+    param(
+        [ValidateNotNullOrEmpty()] [string] $OutputDirectory = 'exports/EndpointExplorer',
+        [string] $TenantId,
+        [switch] $UseDeviceCode,
+        [ValidateSet('DeviceManagementConfiguration.ReadWrite.All', 'DeviceManagementApps.ReadWrite.All', 'DeviceManagementManagedDevices.ReadWrite.All')]
+        [string] $Scope = 'DeviceManagementConfiguration.ReadWrite.All',
+        [ValidateRange(1, 180)] [int] $TimeoutMinutes = 30,
+        [ValidateRange(5, 300)] [int] $PollSeconds = 15,
+        [switch] $PassThru
+    )
+    Initialize-EndpointGraphState
+    $directory = $PSCmdlet.SessionState.Path.GetUnresolvedProviderPathFromPSPath($OutputDirectory)
+    $path = Join-Path $directory ('AppInvRawData-{0}.zip' -f (Get-Date -Format 'yyyyMMdd-HHmmss'))
+    # Creating the job is the only tenant-side change; it needs a ReadWrite
+    # scope (Graph docs list no Read-only scope for creating export jobs).
+    if (-not $PSCmdlet.ShouldProcess('Intune reports', 'Create an AppInvRawData (Discovered apps raw data) export job and download it to ' + $path)) { return }
+    $script:EndpointGraphState.Session = Connect-EndpointGraph -TenantId $TenantId -Scopes @($Scope) -DeviceCode:$UseDeviceCode
+    $script:EndpointGraphState.AllowAppInventoryExport = $true
+    try {
+        $body = @{
+            reportName = 'AppInvRawData'; format = 'csv'; localizationType = 'replaceLocalizableValues'
+            select = @('DeviceId', 'DeviceName', 'ApplicationName', 'ApplicationVersion', 'ApplicationShortVersion', 'ApplicationPublisher', 'Platform')
+        }
+        $job = Invoke-EndpointGraph -Method Post -Uri '/deviceManagement/reports/exportJobs' -Body $body
+        $id = [string](Get-EndpointProperty $job 'id')
+        if ($id -notmatch '^AppInvRawData_[0-9A-Za-z-]+$') { throw "Unexpected export job id '$id'." }
+        Write-Information "Export job created: $id" -InformationAction Continue
+        $deadline = [DateTimeOffset]::UtcNow.AddMinutes($TimeoutMinutes)
+        while ($true) {
+            $status = [string](Get-EndpointProperty $job 'status')
+            if ($status -eq 'completed') { break }
+            if ($status -eq 'failed') { throw "Export job $id failed." }
+            if ([DateTimeOffset]::UtcNow -gt $deadline) { throw "Export job $id did not finish within $TimeoutMinutes minute(s) (last status: $status)." }
+            Write-Verbose "Export job status: $status"
+            Start-Sleep -Seconds $PollSeconds
+            $job = Invoke-EndpointGraph -Method Get -Uri "/deviceManagement/reports/exportJobs/$id"
+        }
+        $url = [string](Get-EndpointProperty $job 'url')
+        if (-not $url) { throw "Export job $id completed without a download URL." }
+        if (-not (Test-Path -LiteralPath $directory -PathType Container)) { New-Item -Path $directory -ItemType Directory -Force | Out-Null }
+        Save-EndpointExportDownload -Url $url -Path $path
+        Write-Information "Saved: $path" -InformationAction Continue
+        Write-Information "Next: .\Export-EndpointInventory.ps1 -AppInventoryPath '$path'" -InformationAction Continue
+        if ($PassThru) { return (Get-Item -LiteralPath $path) }
+    }
+    finally { $script:EndpointGraphState.AllowAppInventoryExport = $false }
 }
 
 #endregion
@@ -1287,7 +1590,8 @@ var EndpointRollout = (function () {
   document.getElementById('meta').innerHTML =
     '<span>Generated ' + esc(fmtDate(data.generatedAt)) + ' (' + esc(age) + ' ago)</span>' +
     '<span>Scope: ' + (data.source.windowsOnly ? 'Windows devices' : 'all platforms') + '</span>' +
-    '<span>Per-device apps: ' + (hasDeviceApps ? 'included' : 'not collected') + '</span>' +
+    '<span>Per-device apps: ' + (!hasDeviceApps ? 'not collected' : data.source.appInventory ?
+      'imported from ' + esc(data.source.appInventory.file) + ' (' + esc(fmtDate(data.source.appInventory.fileTime)) + ')' : 'from Graph') + '</span>' +
     '<span>Active window: ' + esc(data.thresholds.activeWithinDays) + ' days</span>' +
     '<span>Graph calls: ' + esc(data.source.graphCalls) + '</span>';
   if (data.warnings && data.warnings.length) {
@@ -1540,7 +1844,7 @@ var EndpointRollout = (function () {
         ['Entra object ID', d.entraObjectId], ['Entra last sign-in (approx.)', fmtDate(d.entraApproxLastSignIn)]
       ]);
     if (!hasDeviceApps) {
-      html += '<div class="empty">Per-device apps were not collected. Rerun with -IncludeDeviceApps.</div>';
+      html += '<div class="empty">Per-device apps were not collected. Rerun with -AppInventoryPath (a Discovered apps export) or -IncludeDeviceApps.</div>';
     } else {
       var list = (d.appRecordIndexes || []).filter(function (ri) { return records[ri]; })
         .sort(function (x, y) { return cmp(records[x], records[y], 'name', 1); });
@@ -1577,7 +1881,7 @@ var EndpointRollout = (function () {
           (hasDeviceApps ? '<td class="num">' + num((devicesByRecord[ri] || []).length) + '</td>' : '') + '</tr>';
       }).join('') + '</tbody></table></div><div id="rollout-panel"></div>';
     if (!hasDeviceApps) {
-      html += '<div class="empty">Device list and rollout export need per-device apps. Rerun with -IncludeDeviceApps.</div>';
+      html += '<div class="empty">Device list and rollout export need per-device apps. Rerun with -AppInventoryPath (a Discovered apps export) or -IncludeDeviceApps.</div>';
     } else {
       var seen = {}, list = [];
       (a.recordIndexes || []).forEach(function (ri) {
@@ -1712,12 +2016,18 @@ function Invoke-EndpointInventory {
         [switch] $Refresh,
         [switch] $FromCache,
         [ValidateRange(0, 3650)] [int] $ActiveWithinDays = 30,
+        [ValidateScript({ Test-Path -LiteralPath $_ -PathType Leaf })]
+        [string] $AppInventoryPath,
         [switch] $ExportCsv,
         [switch] $PassThru
     )
     if ($FromCache -and $Refresh) { throw '-FromCache and -Refresh cannot be used together.' }
     Initialize-EndpointGraphState
     $windowsOnly = -not $AllPlatforms
+    # An app inventory file supplies per-device apps, so Graph is not asked for them.
+    $graphDeviceApps = $IncludeDeviceApps -and -not $AppInventoryPath
+    if ($IncludeDeviceApps -and $AppInventoryPath) { Write-Information '-AppInventoryPath supplies per-device apps; skipping the Graph per-app lookups.' -InformationAction Continue }
+    $inventoryFile = if ($AppInventoryPath) { $PSCmdlet.SessionState.Path.GetUnresolvedProviderPathFromPSPath($AppInventoryPath) } else { $null }
     $directory = $PSCmdlet.SessionState.Path.GetUnresolvedProviderPathFromPSPath($OutputDirectory)
     $paths = [pscustomobject]@{
         Json = Join-Path $directory 'EndpointInventory.json'
@@ -1732,7 +2042,7 @@ function Invoke-EndpointInventory {
     if ($FromCache) {
         if (-not (Test-Path -LiteralPath $paths.Json -PathType Leaf)) { throw "-FromCache: no snapshot at '$($paths.Json)'. Run without -FromCache first." }
         $snapshot = Import-EndpointSnapshot -Path $paths.Json -ActiveWithinDays $ActiveWithinDays
-        $mismatch = Get-EndpointCacheMismatch -Snapshot $snapshot -WindowsOnly:$windowsOnly -IncludeDeviceApps:$IncludeDeviceApps
+        $mismatch = Get-EndpointCacheMismatch -Snapshot $snapshot -WindowsOnly:$windowsOnly -IncludeDeviceApps:$graphDeviceApps
         if ($mismatch) { Write-Warning "-FromCache renders the snapshot as stored: $mismatch." }
         $origin = 'cache (-FromCache)'
     }
@@ -1743,7 +2053,7 @@ function Invoke-EndpointInventory {
             catch { Write-Warning "Ignoring cached snapshot: $($_.Exception.Message)" }
             if ($null -ne $cached) {
                 $age = [DateTimeOffset]::UtcNow - (ConvertTo-EndpointTimestamp $cached.generatedAt)
-                $mismatch = Get-EndpointCacheMismatch -Snapshot $cached -WindowsOnly:$windowsOnly -IncludeDeviceApps:$IncludeDeviceApps
+                $mismatch = Get-EndpointCacheMismatch -Snapshot $cached -WindowsOnly:$windowsOnly -IncludeDeviceApps:$graphDeviceApps
                 if ($mismatch) { Write-Information "Cached snapshot not reused: $mismatch." -InformationAction Continue }
                 elseif ($age -lt [TimeSpan]::Zero) { Write-Warning 'Cached snapshot is dated in the future; pulling a fresh one.' }
                 elseif ($age.TotalHours -ge $MaxAgeHours) { Write-Information ('Cached snapshot is {0:N1} h old (limit {1} h); pulling a fresh one.' -f $age.TotalHours, $MaxAgeHours) -InformationAction Continue }
@@ -1756,9 +2066,16 @@ function Invoke-EndpointInventory {
         if ($null -eq $snapshot) {
             $script:EndpointGraphState.Session = Connect-EndpointGraph -TenantId $TenantId -Scopes $script:EndpointRequiredScopes -DeviceCode:$UseDeviceCode
             Write-Information ('Connected to Microsoft Graph as {0} ({1}).' -f $script:EndpointGraphState.Session.Account, $script:EndpointGraphState.Session.Mode) -InformationAction Continue
-            $snapshot = Get-EndpointInventorySnapshot -WindowsOnly:$windowsOnly -IncludeDeviceApps:$IncludeDeviceApps -ActiveWithinDays $ActiveWithinDays
+            $snapshot = Get-EndpointInventorySnapshot -WindowsOnly:$windowsOnly -IncludeDeviceApps:$graphDeviceApps -ActiveWithinDays $ActiveWithinDays
             $origin = 'Microsoft Graph'
         }
+    }
+    $snapshotChanged = $origin -eq 'Microsoft Graph'
+    if ($inventoryFile) {
+        Write-Information "Importing app inventory from $inventoryFile..." -InformationAction Continue
+        $import = Import-EndpointAppInventory -Snapshot $snapshot -Path $inventoryFile
+        Write-Information ('App inventory: {0} of {1} rows mapped by {2}; {3} non-Windows row(s) skipped; {4} added app version(s); {5} out-of-scope device(s).' -f $import.matchedRows, $import.rows, $import.deviceIdType, $import.nonWindowsRows, $import.addedRecords, $import.outOfScopeDevices) -InformationAction Continue
+        $snapshotChanged = $true
     }
 
     $utf8 = New-Object System.Text.UTF8Encoding $false
@@ -1766,7 +2083,7 @@ function Invoke-EndpointInventory {
     $ensureDirectory = {
         if (-not (Test-Path -LiteralPath $directory -PathType Container)) { New-Item -Path $directory -ItemType Directory -Force | Out-Null }
     }
-    if ($origin -eq 'Microsoft Graph' -and $PSCmdlet.ShouldProcess($paths.Json, 'Write inventory snapshot')) {
+    if ($snapshotChanged -and $PSCmdlet.ShouldProcess($paths.Json, 'Write inventory snapshot')) {
         & $ensureDirectory
         [System.IO.File]::WriteAllText($paths.Json, (ConvertTo-Json -InputObject $snapshot -Depth 10 -Compress), $utf8)
         $written.Add($paths.Json)

@@ -25,6 +25,7 @@ The report shows:
 | File | Purpose |
 |---|---|
 | `Export-EndpointInventory.ps1` | Entry point (Windows PowerShell 5.1) |
+| `Export-EndpointAppInventoryReport.ps1` | Optional: downloads the Discovered apps raw-data report through Graph (needs a ReadWrite scope) |
 | `EndpointExplorer.Common.ps1` | Graph transport and read-only boundary, classification, caching, rendering |
 | `New-EndpointDemoReport.ps1` | Writes a demo report from generated mock data (no Graph) |
 | `EndpointExplorer.Tests.ps1` | Offline Pester 5 tests |
@@ -59,7 +60,10 @@ The report shows:
 # Preview: performs all Graph reads, prints counts and target paths, writes nothing
 .\Export-EndpointInventory.ps1 -UseDeviceCode -WhatIf
 
-# Full pull including per-device apps, plus CSVs for Excel / Power BI
+# Per-device apps from a Discovered apps export (recommended; no per-app Graph calls)
+.\Export-EndpointInventory.ps1 -AppInventoryPath C:\Temp\AppInvRawData.zip
+
+# Per-device apps through Graph instead (slow under Intune throttling), plus CSVs
 .\Export-EndpointInventory.ps1 -IncludeDeviceApps -Refresh -ExportCsv
 
 # Re-render from the cached snapshot only (never contacts Graph)
@@ -70,7 +74,8 @@ The report shows:
 |---|---|---|
 | `-OutputDirectory` | `exports/EndpointExplorer` | Relative to the current location |
 | `-AllPlatforms` | off | Include all platforms (default: Windows devices and Windows apps only) |
-| `-IncludeDeviceApps` | off | Resolve which devices have each app (the expensive part) |
+| `-AppInventoryPath` | | Discovered apps raw-data export (`.zip` or `.csv`) that supplies per-device apps; see below |
+| `-IncludeDeviceApps` | off | Resolve per-device apps through Graph, one lookup per app record (slow; ignored with `-AppInventoryPath`) |
 | `-MaxAgeHours` | 24 | Reuse a cached snapshot younger than this; 0 always pulls |
 | `-Refresh` | off | Always pull. Cannot be combined with `-FromCache` |
 | `-FromCache` | off | Render only; fails if the snapshot is missing or invalid |
@@ -87,6 +92,51 @@ Output (all under the git-ignored `exports/` tree by default, overwritten each r
 | `EndpointInventory.html` | Every run |
 | `EndpointDevices.csv`, `EndpointApps.csv` | `-ExportCsv` |
 | `EndpointDeviceApps.csv` | `-ExportCsv` and the snapshot has per-device apps |
+
+### Per-device apps: import a Discovered apps export
+
+Per-device apps are needed for the device drill-down and the rollout export.
+Resolving them through Graph (`-IncludeDeviceApps`) costs one lookup per app
+name/version record, and Intune throttles that query hard. A tenant with
+about 7,000 records can take an hour or more. One Intune report covers the same
+data in a single file:
+
+1. Get the **Discovered apps raw-data report (`AppInvRawData`)**:
+   - **Admin center:** **Apps > Monitor > Discovered apps > Export**. Pick the
+     export that includes device-level data; the aggregate export has no
+     `DeviceId` column and is rejected with a message listing the columns found.
+   - **Graph:** run `.\Export-EndpointAppInventoryReport.ps1`. It creates the
+     export job, waits for it, and downloads the zip. Graph documents only
+     ReadWrite permissions for creating export jobs, so this script needs one,
+     and it is kept separate from the read-only inventory script.
+2. Run `.\Export-EndpointInventory.ps1 -AppInventoryPath <file.zip|file.csv>`.
+   The import applies to a fresh pull or to the cached snapshot. It makes no
+   Graph calls and saves the updated snapshot.
+
+How rows are matched:
+
+- **Platform:** the export covers every platform. Unless you use
+  `-AllPlatforms`, only rows with `OSDescription` = `Windows` are kept (or
+  `Platform` = `Windows` if the file has no `OSDescription` column). Other rows
+  are skipped while the file is read, and the report counts them. A file with no
+  Windows rows is rejected.
+
+- **Columns:** header names are matched ignoring case, spaces and punctuation,
+  so the admin center's `Application key`, `DeviceID` and `OSDescription` all
+  work. `DeviceID`, `ApplicationName` and `ApplicationVersion` are required;
+  `ApplicationID` and the user columns are ignored.
+- **Apps:** each row is matched to a detected-app record by name and version,
+  trying `ApplicationVersion` first, then `ApplicationShortVersion`. App
+  versions that Graph does not list (for example because the two were taken at
+  different times) are added from the export, with the export's device count.
+- **Devices:** the import checks whether `DeviceId` holds Intune or Entra device
+  IDs by counting which matches more devices. A file that matches none is
+  rejected.
+- **Report:** the header shows which file supplied the data and its time. A
+  warning appears if the export and the snapshot are more than 7 days apart.
+
+At fleet scale a 450,000-row export (3,000 devices x 150 apps) imports in about
+15 seconds on PowerShell 7. Windows PowerShell 5.1 is typically slower.
 
 ### Demo report (mock data)
 
@@ -112,8 +162,8 @@ is valid, so you can re-render it through the real cache path with
 
 The report can produce the same files as
 [PhasedRollout/phased-rollout-creator.ps1](../PhasedRollout/phased-rollout-creator.ps1)
-entirely in the browser, with no Graph calls. This needs a snapshot pulled with
-`-IncludeDeviceApps`.
+entirely in the browser, with no Graph calls. This needs per-device apps:
+`-AppInventoryPath` (recommended) or `-IncludeDeviceApps`.
 
 1. In **Installed apps**, open an app (for example VLC media player).
 2. Under **Versions**, tick the versions to target. You can also enter a version
@@ -196,24 +246,45 @@ endpoints, and foreign hosts:
 | GET | `/v1.0/devices(?...)` (Entra device list: object ID and approximate sign-in only) |
 | POST | `/v1.0/$batch` with 1 to 20 bodiless GETs of `detectedApps/{id}/managedDevices?$select=id` |
 
+`Export-EndpointAppInventoryReport.ps1` is the only exception. While it runs it
+turns on a separate allowance for exactly two requests:
+
+- POST `/v1.0/deviceManagement/reports/exportJobs` with
+  `reportName = AppInvRawData`, and with no filter or snapshot;
+- GET of that job's status.
+
+It downloads the result from the Azure Blob Storage link the job returns. That
+link carries its own SAS token, so no Graph token is sent, and the link is
+never logged. The inventory script never turns this allowance on.
+
 Throttling: HTTP 429/502/503/504/509 are retried up to 5 attempts. The script
 honors `Retry-After` and never shortens it; without that header it uses
-jittered exponential backoff. Batch subrequests are retried individually. Every
-local write is behind `ShouldProcess`, so `-WhatIf` writes nothing.
+jittered exponential backoff. Batch subrequests are retried individually.
+
+When Intune throttles the per-app lookups, every following batch also waits.
+The wait doubles each time (up to 30 seconds) and halves again once batches
+succeed, so the run slows to a rate Intune accepts instead of retrying in
+bursts. A record still throttled after its retries is reported as unresolved
+in the report's warnings; it no longer aborts the run.
+
+Every local write is behind `ShouldProcess`, so `-WhatIf` writes nothing.
 
 ## Scale and runtime (about 3,000 devices)
 
 - **Devices:** about 3 to 4 pages of 1,000.
 - **Fleet apps:** a few pages. There is one record per app name, version, and
   platform, with an Intune `deviceCount`.
+- **`-AppInventoryPath`:** no Graph calls; about 15 seconds to import 450,000
+  rows on PowerShell 7.
 - **`-IncludeDeviceApps`:** one batched subrequest per app record, 20 per
   `$batch` call. Runtime grows with the number of distinct name/version records,
-  not the device count. Expect a few hundred batch calls on a large fleet. Run
-  it daily at most; the cache covers the rest.
+  not the device count. Intune throttles this query far below Microsoft's
+  documented limit (2,000 requests per 20 seconds per app), so about 7,000
+  records can take an hour or more. Prefer `-AppInventoryPath`.
 - **App counts:** without per-device data, an app's device count is the sum of
   its per-version counts, so a device with two versions counts twice. The report
-  says when counts are approximate. With `-IncludeDeviceApps` the count is exact.
-- **File size:** with `-IncludeDeviceApps` the HTML file can be several MB.
+  says when counts are approximate. With per-device apps the count is exact.
+- **File size:** with per-device apps the HTML file can be several MB.
   Per-device apps are stored as indexes into one shared app-record table to keep
   it small.
 

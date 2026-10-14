@@ -47,6 +47,8 @@ BeforeAll {
             )
             EntraFilterMode = 'ok'
             BatchFirstStatus = 0
+            ThrottledApps = @()
+            ExportStatuses = New-Object 'System.Collections.Generic.Queue[string]'
             AppDevices = @{
                 'app-7z-23' = @('dev-1', 'dev-2'); 'app-7z-19' = @('dev-2'); 'app-chrome' = @('dev-1', 'dev-2', 'dev-3')
                 'app-mac' = @('dev-5'); 'app-ghost' = @('dev-unknown')
@@ -112,12 +114,20 @@ BeforeAll {
                     }
                     if ([string]$request.url -notmatch '^/deviceManagement/detectedApps/([^/?]+)/managedDevices\?\$select=id$') { throw "Unexpected batch url $($request.url)" }
                     $appId = [uri]::UnescapeDataString($Matches[1])
+                    if ($tenant.ThrottledApps -contains $appId) { @{ id = $request.id; status = 429; headers = @{ 'Retry-After' = '2' }; body = @{} }; continue }
                     if (-not $tenant.AppDevices.ContainsKey($appId)) { @{ id = $request.id; status = 404; body = @{ error = @{ code = 'NotFound' } } }; continue }
                     $pageUri = "https://graph.microsoft.com/v1.0/deviceManagement/detectedApps/$appId/managedDevices?`$select=id"
                     $page = Get-FakePage -Uri $pageUri -Items @($tenant.AppDevices[$appId] | ForEach-Object { @{ id = $_ } }) -PageSize $tenant.PageSize
                     @{ id = $request.id; status = 200; body = $page }
                 })
             $content = @{ responses = $responses }
+        }
+        elseif ($Method -eq 'Post' -and $Uri -match '/v1\.0/deviceManagement/reports/exportJobs$') {
+            return [pscustomobject]@{ StatusCode = 201; RetryAfter = 0; Content = (@{ id = 'AppInvRawData_0a1b-2c3d'; reportName = $body.reportName; status = 'notStarted' } | ConvertTo-Json -Compress) }
+        }
+        elseif ($Method -eq 'Get' -and $Uri -match '/v1\.0/deviceManagement/reports/exportJobs/(AppInvRawData_[^/?]+)$') {
+            $status = if ($tenant.ExportStatuses.Count -gt 0) { $tenant.ExportStatuses.Dequeue() } else { 'completed' }
+            $content = @{ id = $Matches[1]; status = $status; url = $(if ($status -eq 'completed') { 'https://fakeacct.blob.core.windows.net/c/AppInvRawData.zip?sig=redacted' } else { $null }) }
         }
         else { throw "Unexpected Graph request $Method $Uri" }
         return [pscustomobject]@{ StatusCode = 200; RetryAfter = 0; Content = ($content | ConvertTo-Json -Depth 20 -Compress) }
@@ -832,5 +842,235 @@ fs.writeFileSync(zipPath, EndpointRollout.zip(result.files));
             [Text.Encoding]::UTF8.GetString($bytes, 3, $bytes.Length - 3) | Should -BeExactly $file.text
             $file.text | Should -Match "`r`n$"
         }
+    }
+}
+
+Describe 'App inventory import (-AppInventoryPath)' {
+    BeforeAll {
+        function Write-FakeInventory {
+            param([string] $Path, [string[]] $Header, [object[]] $Rows, [switch] $Zip)
+            $lines = @(($Header | ForEach-Object { '"' + $_ + '"' }) -join ',')
+            foreach ($row in $Rows) { $lines += (@($row | ForEach-Object { '"' + ([string]$_).Replace('"', '""') + '"' }) -join ',') }
+            $csvPath = if ($Zip) { [IO.Path]::ChangeExtension($Path, '.csv') } else { $Path }
+            [IO.File]::WriteAllText($csvPath, ($lines -join "`r`n") + "`r`n", (New-Object System.Text.UTF8Encoding $true))
+            if ($Zip) { Compress-Archive -LiteralPath $csvPath -DestinationPath $Path; Remove-Item -LiteralPath $csvPath }
+            return $Path
+        }
+        # Header exactly as the Intune admin center raw-data export writes it.
+        $script:apiHeader = @('Application key', 'ApplicationID', 'ApplicationName', 'ApplicationPublisher', 'ApplicationShortVersion', 'ApplicationVersion',
+            'DeviceID', 'DeviceName', 'OSDescription', 'OSVersion', 'Platform', 'UserID', 'EmailAddress', 'Username')
+        function Get-FakeInventoryRow {
+            param([string] $Name, [string] $Publisher, [string] $Short, [string] $Version, [string] $DeviceId, [string] $DeviceName, [string] $Os = 'Windows')
+            return , @('key', '', $Name, $Publisher, $Short, $Version, $DeviceId, $DeviceName, $Os, '10.0', $Os, 'u', 'user@example.test', 'User')
+        }
+        # dev-1: 7-Zip 23.01 + an app Graph does not list; dev-2: 7-Zip 19.00 + Chrome;
+        # dev-3: Chrome; dev-ghost is not in the snapshot.
+        $script:apiRows = @(
+            , (Get-FakeInventoryRow '7-Zip' 'Igor Pavlov' '23.01' '23.01' 'dev-1' 'WIN-001')
+            , (Get-FakeInventoryRow 'Brand New Tool' 'Example Corp' '1.0' '1.0.0.0' 'dev-1' 'WIN-001')
+            , (Get-FakeInventoryRow '7-Zip' 'Igor Pavlov' '19.00' '19.00' 'DEV-2' 'WIN-002')
+            , (Get-FakeInventoryRow 'Google Chrome' 'Google' '130.0' '130.0' 'dev-2' 'WIN-002')
+            , (Get-FakeInventoryRow 'Google Chrome' 'Google' '130.0' '130.0' 'dev-3' 'WIN-003')
+            , (Get-FakeInventoryRow 'Google Chrome' 'Google' '130.0' '130.0' 'dev-ghost' 'GHOST')
+            # Other platforms are in the same export and must be skipped.
+            , (Get-FakeInventoryRow 'Safari' 'Apple' '18.0' '18.0' 'dev-5' 'MAC-001' 'macOS')
+            , (Get-FakeInventoryRow 'Outlook' 'Microsoft' '4.2' '4.2' 'ios-1' 'IPHONE' 'iOS')
+        )
+    }
+    BeforeEach {
+        $script:fake = Initialize-FakeTenant
+        $script:out = Join-Path $TestDrive ([guid]::NewGuid().ToString('N'))
+        $null = New-Item -ItemType Directory -Path $script:out
+    }
+
+    It 'maps devices from a CSV with API column names and makes no per-app Graph calls' {
+        $file = Write-FakeInventory -Path (Join-Path $script:out 'inv.csv') -Header $script:apiHeader -Rows $script:apiRows
+        $snapshot = Invoke-EndpointInventory -OutputDirectory $script:out -IncludeDeviceApps -AppInventoryPath $file -PassThru 6>$null
+        @($script:fake.Calls | Where-Object { $_.Method -eq 'Post' }).Count | Should -Be 0
+        $snapshot.source.includeDeviceApps | Should -BeTrue
+        $snapshot.source.appInventory.deviceIdType | Should -Be 'Intune device ID'
+        $snapshot.source.appInventory.matchedRows | Should -Be 5
+        $snapshot.source.appInventory.nonWindowsRows | Should -Be 2
+        $snapshot.source.appInventory.addedRecords | Should -Be 1
+        @($snapshot.appRecords).name | Should -Not -Contain 'Safari'
+        @($snapshot.appRecords).name | Should -Not -Contain 'Outlook'
+        $snapshot.source.appInventory.outOfScopeDevices | Should -Be 1
+        $records = @($snapshot.appRecords)
+        $names = { param($id) @(($snapshot.devices | Where-Object intuneDeviceId -EQ $id).appRecordIndexes | ForEach-Object { '{0} {1}' -f $records[$_].name, $records[$_].version } | Sort-Object) }
+        & $names 'dev-1' | Should -Be @('7-Zip 23.01', 'Brand New Tool 1.0.0.0')
+        & $names 'dev-2' | Should -Be @('7-Zip 19.00', 'Google Chrome 130.0')
+        & $names 'dev-4' | Should -BeNullOrEmpty
+        $zip = $snapshot.apps | Where-Object name -EQ '7-Zip'
+        $zip.deviceCount | Should -Be 2
+        $zip.isInstalledVersionApprox | Should -BeFalse
+        ($snapshot.apps | Where-Object name -EQ 'Brand New Tool').deviceCount | Should -Be 1
+        @($snapshot.warnings | Where-Object { $_ -like 'App inventory import:*' }).Count | Should -Be 3
+    }
+
+    It 'reads a zipped export with spaced headers and Entra device IDs' {
+        $header = @('Device ID', 'Application Name', 'Application Version', 'Application Publisher', 'Platform')
+        $rows = @(
+            , @('11111111-1111-1111-1111-111111111111', '7-Zip', '23.01', 'Igor Pavlov', 'Windows')
+            , @('22222222-2222-2222-2222-222222222222'.ToUpperInvariant(), 'Google Chrome', '130.0', 'Google', 'Windows')
+        )
+        $file = Write-FakeInventory -Path (Join-Path $script:out 'inv.zip') -Header $header -Rows $rows -Zip
+        $snapshot = Invoke-EndpointInventory -OutputDirectory $script:out -AppInventoryPath $file -PassThru 6>$null
+        $snapshot.source.appInventory.deviceIdType | Should -Be 'Entra device ID'
+        $snapshot.source.appInventory.matchedRows | Should -Be 2
+        $snapshot.source.appInventory.addedRecords | Should -Be 0
+        $records = @($snapshot.appRecords)
+        $records[@(($snapshot.devices | Where-Object intuneDeviceId -EQ 'dev-2').appRecordIndexes)[0]].name | Should -Be 'Google Chrome'
+    }
+
+    It 'falls back to ApplicationShortVersion to match a detected app record' {
+        $rows = @(, (Get-FakeInventoryRow '7-Zip' 'Igor Pavlov' '23.01' '23.01.0000.0' 'dev-1' 'WIN-001'))
+        $file = Write-FakeInventory -Path (Join-Path $script:out 'inv.csv') -Header $script:apiHeader -Rows $rows
+        $snapshot = Invoke-EndpointInventory -OutputDirectory $script:out -AppInventoryPath $file -PassThru 6>$null
+        $snapshot.source.appInventory.addedRecords | Should -Be 0
+        $records = @($snapshot.appRecords)
+        $records[@(($snapshot.devices | Where-Object intuneDeviceId -EQ 'dev-1').appRecordIndexes)[0]].version | Should -Be '23.01'
+    }
+
+    It 'keeps other platforms with -AllPlatforms' {
+        $file = Write-FakeInventory -Path (Join-Path $script:out 'inv.csv') -Header $script:apiHeader -Rows $script:apiRows
+        $snapshot = Invoke-EndpointInventory -OutputDirectory $script:out -AllPlatforms -AppInventoryPath $file -PassThru 6>$null
+        $snapshot.source.appInventory.nonWindowsRows | Should -Be 0
+        $records = @($snapshot.appRecords)
+        @(($snapshot.devices | Where-Object intuneDeviceId -EQ 'dev-5').appRecordIndexes | ForEach-Object { $records[$_].name }) | Should -Contain 'Safari'
+    }
+
+    It 'fails clearly when the export has no Windows rows' {
+        $rows = @(, (Get-FakeInventoryRow 'Safari' 'Apple' '18.0' '18.0' 'dev-5' 'MAC-001' 'macOS'))
+        $file = Write-FakeInventory -Path (Join-Path $script:out 'mac.csv') -Header $script:apiHeader -Rows $rows
+        { Invoke-EndpointInventory -OutputDirectory $script:out -AppInventoryPath $file 6>$null } | Should -Throw '*none with OSDescription = Windows*'
+    }
+
+    It 'rejects the aggregate export (no DeviceId column) with the columns it found' {
+        $file = Write-FakeInventory -Path (Join-Path $script:out 'agg.csv') -Header @('ApplicationName', 'ApplicationVersion', 'DeviceCount') -Rows @(, @('7-Zip', '23.01', '5'))
+        { Invoke-EndpointInventory -OutputDirectory $script:out -AppInventoryPath $file 6>$null } | Should -Throw "*no 'deviceid' column*raw-data export*Columns found: ApplicationName*"
+    }
+
+    It 'rejects an export whose device IDs match no snapshot device' {
+        $file = Write-FakeInventory -Path (Join-Path $script:out 'other.csv') -Header $script:apiHeader -Rows @(, (Get-FakeInventoryRow 'X' 'P' '1' '1' 'other-tenant' 'N'))
+        { Invoke-EndpointInventory -OutputDirectory $script:out -AppInventoryPath $file 6>$null } | Should -Throw '*match this snapshot*'
+    }
+
+    It 'applies to a fresh cached snapshot without Graph and saves the result' {
+        $null = Invoke-EndpointInventory -OutputDirectory $script:out 6>$null
+        $script:fake.Calls.Clear(); $script:fake.Connects = 0
+        $file = Write-FakeInventory -Path (Join-Path $script:out 'inv.csv') -Header $script:apiHeader -Rows $script:apiRows
+        $null = Invoke-EndpointInventory -OutputDirectory $script:out -IncludeDeviceApps -AppInventoryPath $file 6>$null
+        $script:fake.Calls.Count | Should -Be 0
+        $script:fake.Connects | Should -Be 0
+        $saved = Import-EndpointSnapshot -Path (Join-Path $script:out 'EndpointInventory.json') -ActiveWithinDays 30
+        $saved.source.includeDeviceApps | Should -BeTrue
+        $saved.source.appInventory.file | Should -Be 'inv.csv'
+        # A later run that asks for device apps reuses the imported snapshot.
+        $snapshot = Invoke-EndpointInventory -OutputDirectory $script:out -IncludeDeviceApps -PassThru 6>$null
+        $script:fake.Calls.Count | Should -Be 0
+        @(($snapshot.devices | Where-Object intuneDeviceId -EQ 'dev-2').appRecordIndexes).Count | Should -Be 2
+    }
+
+    It 'leaves the cached snapshot untouched with -WhatIf' {
+        $null = Invoke-EndpointInventory -OutputDirectory $script:out 6>$null
+        $jsonPath = Join-Path $script:out 'EndpointInventory.json'
+        $before = Get-Content -LiteralPath $jsonPath -Raw
+        $file = Write-FakeInventory -Path (Join-Path $script:out 'inv.csv') -Header $script:apiHeader -Rows $script:apiRows
+        $null = Invoke-EndpointInventory -OutputDirectory $script:out -FromCache -AppInventoryPath $file -WhatIf 6>$null
+        Get-Content -LiteralPath $jsonPath -Raw | Should -BeExactly $before
+    }
+
+    It 'replaces earlier per-device data and does not stack import warnings' {
+        $file = Write-FakeInventory -Path (Join-Path $script:out 'inv.csv') -Header $script:apiHeader -Rows $script:apiRows
+        $null = Invoke-EndpointInventory -OutputDirectory $script:out -AppInventoryPath $file 6>$null
+        $small = Write-FakeInventory -Path (Join-Path $script:out 'small.csv') -Header $script:apiHeader -Rows @(, $script:apiRows[0])
+        $snapshot = Invoke-EndpointInventory -OutputDirectory $script:out -FromCache -AppInventoryPath $small -PassThru 6>$null
+        @(($snapshot.devices | Where-Object intuneDeviceId -EQ 'dev-2').appRecordIndexes).Count | Should -Be 0
+        @($snapshot.warnings | Where-Object { $_ -like 'App inventory import:*mapped*' }).Count | Should -Be 1
+    }
+}
+
+Describe 'Graph per-app lookups under throttling' {
+    BeforeEach {
+        $script:fake = Initialize-FakeTenant
+        Initialize-EndpointGraphState
+        $script:EndpointGraphState.Session = [pscustomobject]@{ Mode = 'MgGraph' }
+    }
+
+    It 'counts a record that stays throttled as unresolved instead of failing the run' {
+        $script:fake.ThrottledApps = @('app-chrome')
+        $records = @(Get-EndpointDetectedApp -WindowsOnly)
+        $result = Get-EndpointDeviceAppMap -AppRecords $records -DeviceIds @('dev-1', 'dev-2', 'dev-3')
+        $result.Unresolved | Should -Be 1
+        $result.Map['dev-1'].Count | Should -Be 1
+        $script:EndpointGraphState.BatchPauseMs | Should -BeGreaterThan 0
+        Should -Invoke Start-Sleep -ParameterFilter { $Milliseconds -gt 0 }
+    }
+
+    It 'reports unresolved records in the snapshot warnings' {
+        $script:fake.ThrottledApps = @('app-chrome')
+        $snapshot = Invoke-EndpointInventory -OutputDirectory (Join-Path $TestDrive 'throttle') -IncludeDeviceApps -PassThru -WarningAction SilentlyContinue 6>$null
+        @($snapshot.warnings | Where-Object { $_ -match 'still throttled' }).Count | Should -Be 1
+    }
+}
+
+Describe 'Export-EndpointAppInventoryReport (AppInvRawData export job)' {
+    BeforeEach {
+        $script:fake = Initialize-FakeTenant
+        $script:out = Join-Path $TestDrive ([guid]::NewGuid().ToString('N'))
+        Mock Invoke-WebRequest { Set-Content -LiteralPath $OutFile -Value 'zip-bytes' }
+    }
+
+    It 'allows only the AppInvRawData job, and only when the export script enables it' {
+        Initialize-EndpointGraphState
+        $post = { param($Body) Assert-EndpointReadRequest -Method Post -Uri 'https://graph.microsoft.com/v1.0/deviceManagement/reports/exportJobs' -Body $Body }
+        { & $post @{ reportName = 'AppInvRawData' } } | Should -Throw '*boundary rejected*'
+        $script:EndpointGraphState.AllowAppInventoryExport = $true
+        { & $post @{ reportName = 'AppInvRawData'; format = 'csv' } } | Should -Not -Throw
+        { & $post @{ reportName = 'Devices' } } | Should -Throw '*boundary rejected*'
+        { & $post @{ reportName = 'AppInvRawData'; filter = "(DeviceId eq 'x')" } } | Should -Throw '*boundary rejected*'
+        { Assert-EndpointReadRequest -Method Get -Uri 'https://graph.microsoft.com/v1.0/deviceManagement/reports/exportJobs/AppInvRawData_0a1b-2c3d' -Body $null } | Should -Not -Throw
+        { Assert-EndpointReadRequest -Method Get -Uri 'https://graph.microsoft.com/v1.0/deviceManagement/reports/exportJobs/Devices_0a1b' -Body $null } | Should -Throw '*boundary rejected*'
+        { Assert-EndpointReadRequest -Method Delete -Uri 'https://graph.microsoft.com/v1.0/deviceManagement/reports/exportJobs/AppInvRawData_0a1b-2c3d' -Body $null } | Should -Throw '*boundary rejected*'
+        Initialize-EndpointGraphState
+        $script:EndpointGraphState.AllowAppInventoryExport | Should -BeFalse
+    }
+
+    It 'creates the job, polls until complete, downloads, and turns the opt-in off again' {
+        $script:fake.ExportStatuses.Enqueue('inProgress')
+        $file = Invoke-EndpointAppInventoryExport -OutputDirectory $script:out -PassThru 6>$null
+        $file.Name | Should -Match '^AppInvRawData-\d{8}-\d{6}\.zip$'
+        Test-Path -LiteralPath $file.FullName | Should -BeTrue
+        $create = @($script:fake.Calls | Where-Object { $_.Method -eq 'Post' })
+        $create.Count | Should -Be 1
+        $create[0].Body.reportName | Should -Be 'AppInvRawData'
+        @($create[0].Body.select) | Should -Contain 'DeviceId'
+        @($script:fake.Calls | Where-Object { $_.Method -eq 'Get' }).Count | Should -Be 2
+        Should -Invoke Connect-EndpointGraph -Times 1 -Exactly -ParameterFilter { $Scopes -contains 'DeviceManagementConfiguration.ReadWrite.All' }
+        Should -Invoke Invoke-WebRequest -Times 1 -Exactly -ParameterFilter { $Uri -like 'https://fakeacct.blob.core.windows.net/*' -and -not $Headers }
+        $script:EndpointGraphState.AllowAppInventoryExport | Should -BeFalse
+    }
+
+    It 'signs in and calls nothing with -WhatIf' {
+        Invoke-EndpointAppInventoryExport -OutputDirectory $script:out -WhatIf 6>$null
+        $script:fake.Calls.Count | Should -Be 0
+        $script:fake.Connects | Should -Be 0
+        Test-Path -LiteralPath $script:out | Should -BeFalse
+    }
+
+    It 'fails clearly when the job fails' {
+        $script:fake.ExportStatuses.Enqueue('failed')
+        { Invoke-EndpointAppInventoryExport -OutputDirectory $script:out 6>$null } | Should -Throw '*failed*'
+        $script:EndpointGraphState.AllowAppInventoryExport | Should -BeFalse
+    }
+
+    It 'refuses to download from anywhere but Azure Blob Storage' {
+        { Save-EndpointExportDownload -Url 'https://evil.example.test/AppInvRawData.zip' -Path (Join-Path $TestDrive 'x.zip') } | Should -Throw '*Azure Blob Storage*'
+        Should -Invoke Invoke-WebRequest -Times 0 -Exactly
+    }
+
+    It 'exposes the same parameters in the script wrapper' {
+        $scriptParams = @((Get-Command (Join-Path $PSScriptRoot 'Export-EndpointAppInventoryReport.ps1')).Parameters.Keys)
+        Compare-Object $scriptParams @((Get-Command Invoke-EndpointAppInventoryExport).Parameters.Keys) | Should -BeNullOrEmpty
     }
 }
